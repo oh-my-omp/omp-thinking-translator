@@ -1,7 +1,30 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { __testing } from "../extensions/thinking-translator.ts";
+import { LANGUAGE_ENV, language, resolveLanguage, tr } from "../extensions/i18n.ts";
 import { formatThinkingForDisplay } from "../node_modules/@oh-my-pi/pi-tui/src/chat/thinking-display.ts";
+const blockLabel = (index: number): string => tr(`Block ${index}`, `第 ${index} 块`);
+const lateHeader = (labels: readonly string[]): string =>
+	tr(`Thinking translation · ${labels.join(", ")}`, `思考翻译 · ${labels.join("、")}`);
+test("language resolution follows explicit env, omomp, locale, and call-time changes", () => {
+	assert.equal(resolveLanguage({ OMOMP_LANG: " ZH ", LC_ALL: "en_US.UTF-8" }, "en"), "zh");
+	assert.equal(resolveLanguage({ OMOMP_LANG: "invalid", LC_ALL: "", LC_MESSAGES: "  ", LANG: "zh_CN.UTF-8" }, "en"), "en");
+	assert.equal(resolveLanguage({ OMOMP_LANG: "invalid", LC_ALL: "", LC_MESSAGES: "  ", LANG: "zh_CN.UTF-8" }), "zh");
+	assert.equal(resolveLanguage({ OMOMP_LANG: "invalid", LC_ALL: "en_US.UTF-8", LC_MESSAGES: "zh_CN.UTF-8" }), "en");
+	assert.equal(resolveLanguage({}), "en");
+
+	const previous = process.env[LANGUAGE_ENV];
+	try {
+		process.env[LANGUAGE_ENV] = "en";
+		assert.equal(language(), "en");
+		process.env[LANGUAGE_ENV] = "ZH";
+		assert.equal(language(), "zh");
+	} finally {
+		if (previous === undefined) delete process.env[LANGUAGE_ENV];
+		else process.env[LANGUAGE_ENV] = previous;
+	}
+});
+
 
 test("config paths honor the active omp agent directory and project root", () => {
 	assert.equal(__testing.getGlobalConfigPath("/profiles/work/agent", "/home/user"), "/profiles/work/agent/thinking-translator.json");
@@ -219,7 +242,7 @@ test("SOURCE_TEXT_BEGIN aborts the current model attempt so fallback can continu
 	assert.equal(controller.signal.aborted, false);
 	assert.throws(
 		() => __testing.abortOnSourceTextBegin("SOURCE_TEXT_BEGIN\nEchoed source text", controller),
-		/translator returned SOURCE_TEXT_BEGIN/,
+		/Translator returned SOURCE_TEXT_BEGIN/,
 	);
 	assert.equal(controller.signal.aborted, true);
 });
@@ -240,7 +263,7 @@ test("splitTranslationLines trims outer indent but keeps internal spacing", () =
 
 test("buildLateRows omits translations whose boxes were already painted", () => {
 	const paintedOnly = __testing.buildLateRows(
-		[{ blockLabel: "第 1 块", text: "已经画进框里", painted: true }],
+		[{ blockLabel: blockLabel(1), text: "已经画进框里", painted: true }],
 		undefined,
 		false,
 	);
@@ -248,59 +271,59 @@ test("buildLateRows omits translations whose boxes were already painted", () => 
 
 	const mixed = __testing.buildLateRows(
 		[
-			{ blockLabel: "第 1 块", text: "已经画进框里", painted: true },
-			{ blockLabel: "第 1 块", text: "还没有画上", painted: false },
+			{ blockLabel: blockLabel(1), text: "已经画进框里", painted: true },
+			{ blockLabel: blockLabel(1), text: "还没有画上", painted: false },
 		],
 		undefined,
 		false,
 	);
-	assert.equal(mixed?.text, "思考翻译 · 第 1 块\n还没有画上");
+	assert.equal(mixed?.text, `${lateHeader([blockLabel(1)])}\n还没有画上`);
 });
 
 test("buildLateRows merges back-to-back late translations into one payload", () => {
 	const payload = __testing.buildLateRows(
 		[
-			{ blockLabel: "第 2 块", text: "第一段译文", painted: false },
-			{ blockLabel: "第 2 块", text: "第二段译文", painted: false },
+			{ blockLabel: blockLabel(2), text: "第一段译文", painted: false },
+			{ blockLabel: blockLabel(2), text: "第二段译文", painted: false },
 		],
 		undefined,
 		false,
 	);
-	assert.equal(payload?.text, "思考翻译 · 第 2 块\n第一段译文\n第二段译文");
+	assert.equal(payload?.text, `${lateHeader([blockLabel(2)])}\n第一段译文\n第二段译文`);
 });
 
 test("buildLateRows carries the previous payload only while coalescing is possible", () => {
 	const previous = __testing.buildLateRows(
-		[{ blockLabel: "第 2 块", text: "上一段译文", painted: false }],
+		[{ blockLabel: blockLabel(2), text: "上一段译文", painted: false }],
 		undefined,
 		false,
 	);
 	assert.ok(previous);
 
 	const merged = __testing.buildLateRows(
-		[{ blockLabel: "第 2 块", text: "新的一段译文", painted: false }],
+		[{ blockLabel: blockLabel(2), text: "新的一段译文", painted: false }],
 		previous,
 		true,
 	);
-	assert.equal(merged?.text, "思考翻译 · 第 2 块\n上一段译文\n新的一段译文");
+	assert.equal(merged?.text, `${lateHeader([blockLabel(2)])}\n上一段译文\n新的一段译文`);
 
 	const fresh = __testing.buildLateRows(
-		[{ blockLabel: "第 3 块", text: "下一块译文", painted: false }],
+		[{ blockLabel: blockLabel(3), text: "下一块译文", painted: false }],
 		previous,
 		false,
 	);
-	assert.equal(fresh?.text, "思考翻译 · 第 3 块\n下一块译文");
+	assert.equal(fresh?.text, `${lateHeader([blockLabel(3)])}\n下一块译文`);
 });
 
 test("buildLateRows keeps distinct block sources in one header line", () => {
 	const payload = __testing.buildLateRows(
 		[
-			{ blockLabel: "第 1 块", text: "第一块译文", painted: false },
-			{ blockLabel: "第 2 块", text: "第二块译文", painted: false },
+			{ blockLabel: blockLabel(1), text: "第一块译文", painted: false },
+			{ blockLabel: blockLabel(2), text: "第二块译文", painted: false },
 		],
 		undefined,
 		false,
 	);
-	assert.equal(payload?.text, "思考翻译 · 第 1 块、第 2 块\n第一块译文\n第二块译文");
+	assert.equal(payload?.text, `${lateHeader([blockLabel(1), blockLabel(2)])}\n第一块译文\n第二块译文`);
 });
 

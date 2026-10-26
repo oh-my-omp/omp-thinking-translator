@@ -3,8 +3,9 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { streamSimple, type Api, type Model, type SimpleStreamOptions } from "@oh-my-pi/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
-import { getMarkdownTheme } from "@oh-my-pi/pi-coding-agent";
+import { getAgentDir, getMarkdownTheme } from "@oh-my-pi/pi-coding-agent";
 import { cfgExpandThinkingBlocks } from "@oh-my-pi/pi-coding-agent/session/settings";
+import { tr } from "./i18n";
 import { Box, Markdown, Text, node, span } from "@oh-my-pi/pi-tui";
 import type { Component, DescribeContext, NativeEventTarget, NativeNode, NativeUiEvent } from "@oh-my-pi/pi-tui";
 
@@ -61,7 +62,7 @@ export function buildLateRows(
 	const rows = coalescing && previousPayload ? [...previousPayload.rows, ...currentRows] : currentRows;
 	const blockLabels = [...new Set(rows.map((row) => row.blockLabel))];
 	return {
-		text: [`思考翻译 · ${blockLabels.join("、")}`, ...rows.map((row) => row.text)].join("\n"),
+		text: [tr(`Thinking translation · ${blockLabels.join(", ")}`, `思考翻译 · ${blockLabels.join("、")}`), ...rows.map((row) => row.text)].join("\n"),
 		rows,
 	};
 }
@@ -153,7 +154,7 @@ export default function thinkingTranslator(pi: ExtensionAPI) {
 	pi.registerAssistantThinkingRenderer((context, theme) => {
 		// 展示文本每次变化都会重建组件，工厂期的拆分就是当前可见行。
 		const sources = splitTranslationLines(context.text);
-		const blockLabel = `第 ${context.thinkingIndex + 1} 块`;
+		const blockLabel = tr(`Block ${context.thinkingIndex + 1}`, `第 ${context.thinkingIndex + 1} 块`);
 		requestRender = context.requestRender;
 		trace("factory", { thinkingIndex: context.thinkingIndex, contentIndex: context.contentIndex, textLen: context.text.length, sources: sources.length, liveBlocks: liveBlocks.size, hasCtx: latestContext !== undefined, hasConfig: activeConfig !== undefined });
 		// 每帧都来；只在格状态签名变化时记一条，否则 trace 文件会被重绘刷爆。
@@ -163,7 +164,11 @@ export default function thinkingTranslator(pi: ExtensionAPI) {
 		const body = new Markdown("", 0, 0, getMarkdownTheme());
 		box.addChild(title);
 		box.addChild(body);
-		const heading = (view: TranslationView): string => `思考翻译 · 块 ${context.thinkingIndex + 1} · ${view.completed}/${view.total}`;
+		const heading = (view: TranslationView): string =>
+			tr(
+				`Thinking translation · Block ${context.thinkingIndex + 1} · ${view.completed}/${view.total}`,
+				`思考翻译 · 块 ${context.thinkingIndex + 1} · ${view.completed}/${view.total}`,
+			);
 		/** ANSI 行与原生描述共用：分发、取格、标记 painted；没有可画的正文时返回 undefined。 */
 		const collect = (width: number | undefined): TranslationView | undefined => {
 			dispatch(sources, context.requestRender, blockLabel);
@@ -259,10 +264,20 @@ export default function thinkingTranslator(pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("thinking-translator", {
-		description: "Show or initialize thinking-translator configuration",
+		description: tr("Show or initialize thinking-translator configuration", "查看或初始化 thinking-translator 配置"),
 		getArgumentCompletions: (prefix) => {
 			const options = ["status", "init", "init --global", "init --project"];
-			return options.filter((option) => option.startsWith(prefix)).map((value) => ({ value, label: value }));
+			return options.filter((option) => option.startsWith(prefix)).map((value) => ({
+				value,
+				label:
+					value === "status"
+						? tr("status — show current configuration", "status — 显示当前配置")
+						: value === "init"
+							? tr("init — initialize global configuration", "init — 初始化全局配置")
+							: value === "init --global"
+								? tr("init --global — initialize global configuration", "init --global — 初始化全局配置")
+								: tr("init --project — initialize project configuration", "init --project — 初始化项目配置"),
+			}));
 		},
 		handler: handleConfigCommand,
 	});
@@ -361,7 +376,14 @@ export default function thinkingTranslator(pi: ExtensionAPI) {
 		const config = (activeConfig ??= loadConfig(ctx));
 		if (!config.enabled) return;
 		if (config.translatorModels.length === 0) {
-			notifyMissingModel(ctx, "not-configured", "thinking-translator enabled but translatorModels is empty; translation skipped");
+			notifyMissingModel(
+				ctx,
+				"not-configured",
+				tr(
+					"thinking-translator is enabled but translatorModels is empty; translation skipped",
+					"thinking-translator 已启用，但 translatorModels 为空；已跳过翻译",
+				),
+			);
 			return;
 		}
 		// 展示行先映射回原文里的整行：揭示中的变体（缺句号、省略号收尾）与最终展示共用同一格。
@@ -456,7 +478,7 @@ function cellBody(cell: TranslationCell): string | undefined {
 		case "done":
 			return cell.progress.translation;
 		case "error":
-			return `翻译失败：${cell.progress.error.replace(/\s+/g, " ").slice(0, 80)}`;
+			return `${tr("Translation failed:", "翻译失败：")} ${cell.progress.error.replace(/\s+/g, " ").slice(0, 80)}`;
 	}
 }
 
@@ -548,7 +570,7 @@ async function streamTranslation(
 	let translation = "";
 	for await (const event of eventStream) {
 		if (signal.aborted) return;
-		if (event.type === "error") throw new Error(event.error.errorMessage || `translation ${event.reason}`);
+		if (event.type === "error") throw new Error(event.error.errorMessage || tr(`Translation ${event.reason}`, `翻译${event.reason}`));
 		if (event.type === "text_delta") {
 			translation += event.delta;
 			abortOnSourceTextBegin(translation, attemptController);
@@ -559,7 +581,7 @@ async function streamTranslation(
 	if (signal.aborted) return;
 	// 空响应按失败处理：重试一次往往就有内容，直接落空格只会留下一行空白。
 	const cleaned = cleanTranslation(translation);
-	if (!cleaned) throw new Error("translator returned empty text");
+	if (!cleaned) throw new Error(tr("Translator returned empty text", "翻译器返回了空文本"));
 	trace("done", { source: source.slice(0, 40), translation: cleaned.slice(0, 40) });
 	cell.progress = { status: "done", translation: cleaned };
 	requestRender();
@@ -568,7 +590,7 @@ async function streamTranslation(
 /** 模型回显输入协议时立即中断本次请求；抛错复用既有模型链 fallback。 */
 function abortOnSourceTextBegin(text: string, controller: AbortController): void {
 	if (!text.includes(SOURCE_TEXT_BEGIN_MARKER)) return;
-	const error = new Error(`translator returned ${SOURCE_TEXT_BEGIN_MARKER}`);
+	const error = new Error(tr(`Translator returned ${SOURCE_TEXT_BEGIN_MARKER}`, `翻译器返回了 ${SOURCE_TEXT_BEGIN_MARKER}`));
 	controller.abort(error);
 	throw error;
 }
@@ -668,7 +690,7 @@ function getGlobalConfigPath(agentDir: string | undefined, home: string): string
 /** 全局先读、项目后读，确保项目策略拥有覆盖权。 */
 function getConfigPaths(ctx?: NotifierContext): ConfigPathInfo[] {
 	const projectPath = getProjectConfigPath(ctx?.cwd);
-	const globalPath = getGlobalConfigPath(process.env.PI_CODING_AGENT_DIR, homedir());
+	const globalPath = getGlobalConfigPath(getAgentDir(), homedir());
 	return [
 		{ scope: "global", path: globalPath, exists: existsSync(globalPath) },
 		...(projectPath ? [{ scope: "project" as const, path: projectPath, exists: existsSync(projectPath) }] : []),
@@ -705,11 +727,11 @@ function loadConfigState(ctx?: NotifierContext): ConfigState {
 
 /** 项目层按字段覆盖；`translatorModels` 是有序链，覆盖时整条替换。 */
 function mergeConfig(base: ResolvedTranslatorConfig, value: unknown): ResolvedTranslatorConfig {
-	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("config must be an object");
+	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(tr("Config must be an object", "配置必须是对象"));
 	const raw = value as Record<string, unknown>;
-	if (raw.enabled !== undefined && typeof raw.enabled !== "boolean") throw new Error("enabled must be boolean");
-	if (raw.targetLanguage !== undefined && (typeof raw.targetLanguage !== "string" || !raw.targetLanguage.trim())) throw new Error("targetLanguage must be a non-empty string");
-	if (raw.trace !== undefined && raw.trace !== null && typeof raw.trace !== "string" && typeof raw.trace !== "boolean") throw new Error("trace must be a path string or boolean");
+	if (raw.enabled !== undefined && typeof raw.enabled !== "boolean") throw new Error(tr("enabled must be boolean", "enabled 必须是布尔值"));
+	if (raw.targetLanguage !== undefined && (typeof raw.targetLanguage !== "string" || !raw.targetLanguage.trim())) throw new Error(tr("targetLanguage must be a non-empty string", "targetLanguage 必须是非空字符串"));
+	if (raw.trace !== undefined && raw.trace !== null && typeof raw.trace !== "string" && typeof raw.trace !== "boolean") throw new Error(tr("trace must be a path string or boolean", "trace 必须是路径字符串或布尔值"));
 	return {
 		enabled: typeof raw.enabled === "boolean" ? raw.enabled : base.enabled,
 		targetLanguage: typeof raw.targetLanguage === "string" ? raw.targetLanguage : base.targetLanguage,
@@ -722,15 +744,15 @@ function mergeConfig(base: ResolvedTranslatorConfig, value: unknown): ResolvedTr
 function normalizeTranslatorModels(value: unknown, fallback: readonly ModelRef[]): readonly ModelRef[] {
 	if (value === undefined) return fallback;
 	if (value === null) return [];
-	if (!Array.isArray(value)) throw new Error("translatorModels must be an array of { provider, id, effort? }");
+	if (!Array.isArray(value)) throw new Error(tr("translatorModels must be an array of { provider, id, effort? }", "translatorModels 必须是 { provider, id, effort? } 数组"));
 	return value.map((entry, index) => parseModelRef(entry, `translatorModels[${index}]`));
 }
 
 function parseModelRef(value: unknown, path: string): ModelRef {
-	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${path} must be an object { provider, id, effort? }`);
+	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(tr(`${path} must be an object { provider, id, effort? }`, `${path} 必须是 { provider, id, effort? } 对象`));
 	const raw = value as Record<string, unknown>;
-	if (typeof raw.provider !== "string" || !raw.provider.trim()) throw new Error(`${path}.provider must be a non-empty string`);
-	if (typeof raw.id !== "string" || !raw.id.trim()) throw new Error(`${path}.id must be a non-empty string`);
+	if (typeof raw.provider !== "string" || !raw.provider.trim()) throw new Error(tr(`${path}.provider must be a non-empty string`, `${path}.provider 必须是非空字符串`));
+	if (typeof raw.id !== "string" || !raw.id.trim()) throw new Error(tr(`${path}.id must be a non-empty string`, `${path}.id 必须是非空字符串`));
 	const effort = raw.effort === undefined || raw.effort === null ? undefined : parseEffortSetting(raw.effort, `${path}.effort`);
 	return { provider: raw.provider, id: raw.id, ...(effort ? { effort } : {}) };
 }
@@ -738,7 +760,7 @@ function parseModelRef(value: unknown, path: string): ModelRef {
 /** 配置边界：只接受 `off` 与宿主等级；其他值抛错，交给配置错误策略禁用翻译，拼错不会静默回落默认。 */
 function parseEffortSetting(value: unknown, path: string): EffortSetting {
 	if (value === "off" || (typeof value === "string" && isEffortLevel(value))) return value;
-	throw new Error(`${path} must be one of: off, ${Object.keys(EFFORT_LEVELS).join(", ")}`);
+	throw new Error(tr(`${path} must be one of: off, ${Object.keys(EFFORT_LEVELS).join(", ")}`, `${path} 必须是以下值之一：off、${Object.keys(EFFORT_LEVELS).join("、")}`));
 }
 
 function isEffortLevel(value: string): value is `${Effort}` {
@@ -750,7 +772,13 @@ function notifyConfigLoadError(ctx: NotifierContext | undefined, path: string, e
 	if (configErrorNotified.has(path)) return;
 	configErrorNotified.add(path);
 	const message = error instanceof Error ? error.message : String(error);
-	ctx?.ui?.notify?.(`thinking-translator config invalid, translation disabled: ${path}: ${message}`, "warning");
+	ctx?.ui?.notify?.(
+		tr(
+			`thinking-translator config invalid, translation disabled: ${path}: ${message}`,
+			`thinking-translator 配置无效，已禁用翻译：${path}：${message}`,
+		),
+		"warning",
+	);
 }
 
 /**
@@ -761,8 +789,15 @@ function notifyConfigLoadError(ctx: NotifierContext | undefined, path: string, e
 async function resolveModel(ctx: ExtensionContext, modelRef: ModelRef): Promise<Model<Api>> {
 	const model = ctx.modelRegistry.find(modelRef.provider, modelRef.id) ?? (await discoverModel(ctx, modelRef));
 	if (model) return model;
-	notifyMissingModel(ctx, modelLabel(modelRef), `thinking-translator model not found: ${modelLabel(modelRef)}; skipped for this request, the next configured model (if any) is tried`);
-	throw new Error("model not found in registry after discovery");
+	notifyMissingModel(
+		ctx,
+		modelLabel(modelRef),
+		tr(
+			`thinking-translator model not found: ${modelLabel(modelRef)}; skipped for this request, the next configured model (if any) is tried`,
+			`thinking-translator 未找到模型：${modelLabel(modelRef)}；本次请求已跳过，将尝试下一个已配置模型（如有）`,
+		),
+	);
+	throw new Error(tr("Model not found in registry after discovery", "模型在发现后仍未在注册表中找到"));
 }
 
 /** 发现失败（网络、鉴权）由宿主记进它自己的 discovery 状态；这里只关心之后能不能查到。 */
@@ -794,7 +829,7 @@ function notifyMissingModel(ctx: NotifierContext, key: string, message: string):
 function notifyTranslationFailure(ctx: NotifierContext, message: string): void {
 	if (translationFailureNotified.has(message)) return;
 	translationFailureNotified.add(message);
-	ctx.ui?.notify?.("thinking translation failed: " + message, "warning");
+	ctx.ui?.notify?.(tr("Thinking translation failed: ", "思考翻译失败：") + message, "warning");
 }
 
 /** 按链的顺序展示每个模型的可用性，帮助用户判断需要修改哪个 JSON；不在注册表的模型先发现一次再报。 */
@@ -803,37 +838,55 @@ async function showConfigStatus(ctx: ExtensionContext): Promise<void> {
 	const modelLines: string[] = [];
 	for (const [index, modelRef] of state.config.translatorModels.entries()) {
 		let model = ctx.modelRegistry.find(modelRef.provider, modelRef.id);
-		let modelStatus = "available";
+		let modelStatus = tr("available", "可用");
 		if (!model) {
 			model = await discoverModel(ctx, modelRef);
-			modelStatus = model ? "available (after discovery)" : "not found (after discovery)";
+			modelStatus = model ? tr("available (after discovery)", "可用（发现后）") : tr("not found (after discovery)", "未找到（发现后）");
 		}
 		// 支持哪些等级以模型目录为准；这里只展示，供用户对照 effort 设置。
-		const modelEfforts = !model ? "unknown" : !model.reasoning ? "none (non-reasoning model)" : model.thinking?.efforts.join(", ") || "none (no effort control)";
-		modelLines.push(`  ${index + 1}. ${modelLabel(modelRef)}: ${modelStatus}; effort: ${modelRef.effort ?? "model default"} (model supports: ${modelEfforts})`);
+		const modelEfforts = !model
+			? tr("unknown", "未知")
+			: !model.reasoning
+				? tr("none (non-reasoning model)", "无（非推理模型）")
+				: model.thinking?.efforts.join(", ") || tr("none (no effort control)", "无（没有推理强度控制）");
+		modelLines.push(
+			`  ${index + 1}. ${modelLabel(modelRef)}: ${modelStatus}; effort: ${modelRef.effort ?? tr("model default", "模型默认值")} (${tr("model supports", "模型支持")}: ${modelEfforts})`,
+		);
 	}
 	const lines = [
-		"thinking-translator status",
+		tr("thinking-translator status", "thinking-translator 状态"),
 		`enabled: ${state.config.enabled}`,
 		`targetLanguage: ${state.config.targetLanguage}`,
-		modelLines.length > 0 ? "translatorModels (tried in order, every request starts at 1):" : "translatorModels: not configured",
+		modelLines.length > 0
+			? tr("translatorModels (tried in order, every request starts at 1):", "translatorModels（按顺序尝试，每次请求都从 1 开始）：")
+			: tr("translatorModels: not configured", "translatorModels：未配置"),
 		...modelLines,
 		`trace: ${resolveTraceFile(state.config, ctx.sessionManager.getSessionFile()) ?? "off"}`,
-		...state.paths.map((info) => `${info.scope} config: ${info.path} (${info.exists ? "found" : "not found"})`),
-		...state.errors.map((item) => `${item.scope} config error: ${item.error instanceof Error ? item.error.message : String(item.error)}`),
+		...state.paths.map((info) =>
+			tr(
+				`${info.scope} configuration: ${info.path} (${info.exists ? "found" : "not found"})`,
+				`${info.scope === "global" ? "全局" : "项目"}配置：${info.path}（${info.exists ? "已找到" : "未找到"}）`,
+			),
+		),
+		...state.errors.map((item) =>
+			tr(
+				`${item.scope} configuration error: ${item.error instanceof Error ? item.error.message : String(item.error)}`,
+				`${item.scope === "global" ? "全局" : "项目"}配置错误：${item.error instanceof Error ? item.error.message : String(item.error)}`,
+			),
+		),
 	];
 	ctx.ui.notify(lines.join("\n"), state.errors.length > 0 ? "warning" : "info");
 }
 
 /** 模板默认禁用，避免用户还没选模型就发起翻译。 */
 function initConfigFile(ctx: ExtensionContext, scope: "global" | "project"): void {
-	const path = scope === "project" ? getProjectConfigPath(ctx.cwd) : getGlobalConfigPath(process.env.PI_CODING_AGENT_DIR, homedir());
+	const path = scope === "project" ? getProjectConfigPath(ctx.cwd) : getGlobalConfigPath(getAgentDir(), homedir());
 	if (!path) {
-		ctx.ui.notify("thinking-translator project config path is unavailable", "warning");
+		ctx.ui.notify(tr("thinking-translator project config path is unavailable", "thinking-translator 项目配置路径不可用"), "warning");
 		return;
 	}
 	if (existsSync(path)) {
-		ctx.ui.notify(`thinking-translator config already exists: ${path}`, "info");
+		ctx.ui.notify(tr(`thinking-translator config already exists: ${path}`, `thinking-translator 配置已存在：${path}`), "info");
 		return;
 	}
 	mkdirSync(dirname(path), { recursive: true });
@@ -849,7 +902,13 @@ function initConfigFile(ctx: ExtensionContext, scope: "global" | "project"): voi
 		) + "\n",
 		"utf8",
 	);
-	ctx.ui.notify(`created ${scope} config: ${path}\nAdd translatorModels and set enabled to true when ready.`, "info");
+	ctx.ui.notify(
+		tr(
+			`created ${scope} config: ${path}\nAdd translatorModels and set enabled to true when ready.`,
+			`已创建${scope === "global" ? "全局" : "项目"}配置：${path}\n准备好后添加 translatorModels 并将 enabled 设为 true。`,
+		),
+		"info",
+	);
 }
 
 /** 要求直译而非响应源文本指令，避免翻译任务变成第二次推理。 */
@@ -889,9 +948,9 @@ function shouldTranslateLine(line: string): boolean {
 async function getTranslatorAuth(ctx: ExtensionContext, translatorModel: Model<Api>): Promise<{ apiKey?: string; headers?: Record<string, string> }> {
 	const auth = await ctx.modelRegistry.getApiKeyAndHeaders(translatorModel).catch((error: unknown) => {
 		const message = error instanceof Error ? error.message : String(error);
-		throw new Error("failed to get translator model credentials: " + message);
+		throw new Error(tr("Failed to get translator model credentials: ", "获取翻译模型凭据失败：") + message);
 	});
-	if (auth.ok === false) throw new Error(auth.error || "failed to get translator model credentials");
+	if (auth.ok === false) throw new Error(auth.error || tr("Failed to get translator model credentials", "获取翻译模型凭据失败"));
 	return { apiKey: auth.apiKey, headers: auth.headers };
 }
 

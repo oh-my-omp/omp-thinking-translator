@@ -103,6 +103,11 @@ manifest 键是 `omp.extensions`，钉住版本的 `@oh-my-pi/*` 18.8.7 包只�
 
 init 命令写入的是一个禁用状态的模板，不会替你选模型。你必须明确设置 `translatorModels`，并把 `enabled` 设为 `true`。
 
+## 界面语言
+
+扩展在需要渲染或报告文字时解析界面语言。设置 `OMOMP_LANG` 为 `en` 或 `zh`（不区分大小写）即可显式选择。否则，OMP-only 扩展会从 omp 的 agent 目录中唯一存在的 `omomp.yml`、`omomp.yaml`、`omomp.json` 或 `omomp.toml` 读取 `omomp-lang: { language: en|zh }`；没有文件、存在多个文件或内容无效时忽略该设置。如果仍没有语言值，就按 `LC_ALL`、`LC_MESSAGES`、`LANG` 的第一个非空值选择：以 `zh` 开头时使用中文，否则使用英文，最终默认英文。omomp 设置每个进程只读取一次，在下一次启动时生效。它只改变界面文字，不会改写 thinking 内容或翻译提示词。
+
+
 ## 配置
 
 扩展自己从不写配置文件；文件只由 `init` 命令创建，在你覆盖之前使用内置默认值。配置文件只写需要覆盖的部分，按以下顺序合并到默认值上：

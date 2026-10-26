@@ -103,6 +103,11 @@ The `provider` and `id` must match a model visible to omp, for example a model f
 
 The init commands write a disabled template and do not choose a model. You must explicitly set `translatorModels` and set `enabled` to `true`.
 
+## UI language
+
+The extension resolves its UI language when it needs to render or report text. Set `OMOMP_LANG` to `en` or `zh` (case-insensitive) to choose explicitly. Otherwise, an OMP-only extension reads `omomp-lang: { language: en|zh }` from the one `omomp.yml`, `omomp.yaml`, `omomp.json`, or `omomp.toml` file in omp's agent directory; no file, multiple files, or invalid content is ignored. If that has no value, the first non-empty `LC_ALL`, `LC_MESSAGES`, or `LANG` selects Chinese when it starts with `zh`, otherwise English, with English as the final fallback. The omomp setting is read once per process and takes effect on the next start. This changes UI chrome only; thinking content and the translation prompt are not rewritten.
+
+
 ## Configuration
 
 The extension never writes config files on its own; files are created only by the `init` commands, and built-in defaults apply until you override them. Files hold partial overrides that merge over the defaults:
