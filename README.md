@@ -44,7 +44,7 @@ or install from a local checkout:
 omp plugin install /absolute/path/to/omp-thinking-translator
 ```
 
-The manifest key is `omp.extensions`, and the pinned `@oh-my-pi/*` 18.8.7 packages live in `devDependencies` only: the host already provides them, so installing this extension adds no `@oh-my-pi` packages under the plugin directory.
+The manifest key is `omp.extensions`. The `@oh-my-pi/*` packages are development-only dependencies kept on the latest release: the host already provides them, so installing this extension adds no `@oh-my-pi` packages under the plugin directory.
 
 ## Quick Start
 
@@ -54,7 +54,7 @@ The manifest key is `omp.extensions`, and the pinned `@oh-my-pi/*` 18.8.7 packag
    omp plugin install git:github.com/oh-my-omp/omp-thinking-translator
    ```
 
-2. Create a global config template from inside omp:
+2. On each new machine, create this plugin's own global config template from inside omp:
 
    ```text
    /thinking-translator init --global
@@ -84,7 +84,7 @@ The manifest key is `omp.extensions`, and the pinned `@oh-my-pi/*` 18.8.7 packag
    /thinking-translator status
    ```
 
-The `provider` and `id` must match a model visible to omp, for example a model from the host model registry. Under `omp --profile <name>`, omp points the agent directory at `~/.omp/profiles/<name>/agent`, so the global config for that profile lives there instead.
+The `provider` and `id` must match a model visible to omp, for example a model from the host model registry, with credentials configured in omp. This setup is manual on each new machine: installing the plugin does not supply a model chain or create its configuration file. With no overrides, the built-in `translatorModels: []` causes a warning and skips translation; it never selects a private or implicit model chain. Under `omp --profile <name>`, omp points the agent directory at `~/.omp/profiles/<name>/agent`, so the global config for that profile lives there instead. For a project-only setup, use `/thinking-translator init --project` and edit `<cwd>/.omp/thinking-translator.json` instead.
 
 ## Commands
 
@@ -110,10 +110,10 @@ The extension resolves its UI language whenever it needs to render or report tex
 
 ## Configuration
 
-The extension never writes config files on its own; files are created only by the `init` commands, and built-in defaults apply until you override them. Files hold partial overrides that merge over the defaults:
+The plugin owns its `thinking-translator.json` files. It never creates them at startup; use an `init` command or write the JSON manually. Built-in defaults apply until you override them: `enabled: true`, `targetLanguage: "Simplified Chinese"`, `translatorModels: []`, and `trace: true`. The empty model chain warns and skips translation, so a new installation needs the manual setup above before it can translate. Files hold partial overrides that merge over the defaults:
 
 1. Built-in defaults
-2. Global config: `<agentDir>/thinking-translator.json`, where `<agentDir>` is `$PI_CODING_AGENT_DIR` when set, otherwise `~/.omp/agent` (default `~/.omp/agent/thinking-translator.json`)
+2. Global config: `<agentDir>/thinking-translator.json`, where `<agentDir>` is omp's active agent directory returned by `getAgentDir()` (normally `~/.omp/agent`; profiles or an explicit agent directory change it)
 3. Project config: `<cwd>/.omp/thinking-translator.json`
 
 The project file is read after the global file, so it wins on every field it sets. `translatorModels` is an ordered chain and is replaced as a whole: a project list is the project's complete chain, `null` clears it, and leaving it out keeps the global chain.
@@ -154,7 +154,7 @@ If any config file fails to parse, the extension shows a one-time warning naming
 4. Each line is checked against the per-line gate and against every tracked block: after Markdown inline-code spans are excluded from language classification, its prose must contain Latin letters and more Latin letters than Chinese characters, and it must be a complete line of one observed block. "Complete" means followed by a newline, or by the end of a block that has closed. A half-written line still being revealed therefore waits instead of being translated as a stream of throwaway fragments, and replayed history — which matches no tracked block — is never dispatched.
 5. Each line text is translated at most once per translator model chain (models, their order, and their efforts) and target language: the first dispatch creates its slot and fires one independent streaming request through the chain, and every later render reuses that slot. Slow lines never block their siblings, and every line lands back in original order.
 6. `render()` (ANSI terminals) and `describe()` (Tern) both go through the same `collect()`: dispatch, look each displayed line up in the table, mark finished cells painted, and return the rows that already have text with a `done/total` count. `render()` draws the box beneath that block; `describe()` returns the native section described above and the same node object while nothing changed. A failing model hands the request to the next model in the chain, discarding any partial text it streamed. If the accumulated stream contains the prompt's internal `SOURCE_TEXT_BEGIN` marker, the extension immediately aborts that model attempt and treats it as the same kind of failure, so the marker and echoed source cannot become a completed translation. A chain that fails as a whole is retried with backoff (500 ms, 2 s, 6 s) from the first model and only then becomes a failure row. Every translation arrival or failure calls the host-provided `requestRender`, so a box or section the host still renders keeps filling in.
-7. When a translation completes, the extension checks whether the box ever drew that cell. If not, and Tern has not described the component, it queues the text for a short debounce and emits one `ctx.ui.notify` payload containing the queued translations and a `思考翻译 · 第 N 块` header. A repaint before the flush marks the cell painted and removes it from that payload. If no host chat event intervened, the next notify re-includes the previous payload because the host may otherwise replace the same status row; `message_start`, `message_update`, or `message_end` starts a fresh payload after chat content has mounted or changed.
+7. When a translation completes, the extension checks whether the box ever drew that cell. If not, and Tern has not described the component, it queues the text and numeric thinking-block index for a short debounce and emits one `ctx.ui.notify` payload. The `Thinking translation · Block N` / `思考翻译 · 第 N 块` header is generated in the current UI language at that flush, including any older rows being coalesced; no translated block label is retained in the queue. A repaint before the flush marks the cell painted and removes it from that payload. If no host chat event intervened, the next notify re-includes the previous payload because the host may otherwise replace the same status row; `message_start` and `toolcall_start` start a fresh payload after new chat content mounts.
 8. Translations live only in an in-memory table and are dropped on session start, session switch, and session shutdown, together with the pending notify queue and prior payload. Nothing is appended to the session transcript and no translation is ever fed back as model input; see [Context Boundary](#context-boundary).
 
 ## Context Boundary
@@ -189,7 +189,7 @@ Not covered by this boundary:
 - **The translation request itself.** Each eligible thinking line is sent to the configured translator models as its own standalone request (`extensions/thinking-translator.ts:358-566`), separate from the agent conversation; when a model fails, the same line goes to the next model in the chain, so every provider in `translatorModels` can receive it. "Not in the agent context" does not mean "not sent to any model": those providers see your thinking text and retain it under their own policy.
 - **Display-derived artifacts.** Terminal scrollback, in-flow notify rows, a terminal recorder, and omp's own `/debug-transcript` (which dumps rendered rows to a temp file, `command-controller.ts:225-236`) contain translated rows by design. That is an observability surface, not conversation context.
 - **Untested paths.** The compaction check ran on a resumed persisted session, so resume is covered to the extent that its canonical messages, provider payloads, and compaction input were inspected — not that historical translations re-render or that every resume UI path was exercised. Session export/import serializers and branch switching were not exercised at all.
-- **Version scope.** The evidence is for this extension revision on omp 18.1.19 (notify check repeated on 18.1.21). The guarantee rests on the host renderer contract and on the request/compaction paths cited above, not on a documented API promise, so re-verify after a host upgrade; the current pin is 18.8.7, and the canary runs and cited host code paths date from the earlier versions and were not repeated there.
+- **Version scope.** The evidence is for this extension revision on omp 18.1.19 (notify check repeated on 18.1.21). The guarantee rests on the host renderer contract and on the request/compaction paths cited above, not on a documented API promise, so re-verify after a host upgrade; development dependencies follow the latest release, and these historical canary runs were not repeated on each release.
 
 ## Limitations
 
@@ -218,5 +218,5 @@ pnpm check
 
 - `extensions/thinking-translator.ts` — the extension: renderer registration, event handling, translation fan-out, and config commands.
 - `tests/thinking-translator.test.ts` — unit tests for config handling and the translation helpers.
-- `package.json` — manifest declaring the `omp.extensions` entry and pinned `devDependencies`.
+- `package.json` — manifest declaring the `omp.extensions` entry and development-only host dependencies.
 - `README.md` — this file; `README.zh-CN.md` is its Simplified Chinese version.

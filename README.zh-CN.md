@@ -44,7 +44,7 @@ omp -e /absolute/path/to/omp-thinking-translator/extensions/thinking-translator.
 omp plugin install /absolute/path/to/omp-thinking-translator
 ```
 
-manifest 键是 `omp.extensions`，钉住版本的 `@oh-my-pi/*` 18.8.7 包只在 `devDependencies` 里：宿主已经提供了它们，所以安装本扩展不会在插件目录下增加任何 `@oh-my-pi` 包。
+manifest 键是 `omp.extensions`。`@oh-my-pi/*` 包只作为开发依赖，并跟随最新发布版：宿主已经提供了它们，所以安装本扩展不会在插件目录下增加任何 `@oh-my-pi` 包。
 
 ## 快速开始
 
@@ -54,7 +54,7 @@ manifest 键是 `omp.extensions`，钉住版本的 `@oh-my-pi/*` 18.8.7 包只�
    omp plugin install git:github.com/oh-my-omp/omp-thinking-translator
    ```
 
-2. 在 omp 里创建全局配置模板：
+2. 每台新机器都需要在 omp 里创建本插件自己的全局配置模板：
 
    ```text
    /thinking-translator init --global
@@ -84,7 +84,7 @@ manifest 键是 `omp.extensions`，钉住版本的 `@oh-my-pi/*` 18.8.7 包只�
    /thinking-translator status
    ```
 
-`provider` 和 `id` 必须对应 omp 可见的模型，例如宿主模型注册表里的模型。使用 `omp --profile <name>` 时，omp 把 agent 目录指向 `~/.omp/profiles/<name>/agent`，该 profile 的全局配置也就在那里。
+`provider` 和 `id` 必须对应 omp 可见的模型，例如宿主模型注册表里的模型，并在 omp 中配置好相应凭据。每台新机器都需要手动完成这些设置：安装插件不会附带模型链，也不会创建配置文件。没有覆盖配置时，内置的 `translatorModels: []` 会触发警告并跳过翻译，不会选择私有或隐式的模型链。使用 `omp --profile <name>` 时，omp 把 agent 目录指向 `~/.omp/profiles/<name>/agent`，该 profile 的全局配置也就在那里。如果只想配置当前项目，改用 `/thinking-translator init --project`，然后编辑 `<cwd>/.omp/thinking-translator.json`。
 
 ## 命令
 
@@ -110,10 +110,10 @@ init 命令写入的是一个禁用状态的模板，不会替你选模型。你
 
 ## 配置
 
-扩展自己从不写配置文件；文件只由 `init` 命令创建，在你覆盖之前使用内置默认值。配置文件只写需要覆盖的部分，按以下顺序合并到默认值上：
+`thinking-translator.json` 由本插件自己拥有。启动时不会创建文件；使用 `init` 命令或手动编写 JSON。覆盖之前使用内置默认值：`enabled: true`、`targetLanguage: "Simplified Chinese"`、`translatorModels: []`、`trace: true`。空模型链会触发警告并跳过翻译，所以新安装后需要先按上文手动配置才能翻译。配置文件只写需要覆盖的部分，按以下顺序合并到默认值上：
 
 1. 内置默认值
-2. 全局配置：`<agentDir>/thinking-translator.json`，其中 `<agentDir>` 在设置了 `$PI_CODING_AGENT_DIR` 时取它，否则为 `~/.omp/agent`（默认 `~/.omp/agent/thinking-translator.json`）
+2. 全局配置：`<agentDir>/thinking-translator.json`，其中 `<agentDir>` 是 omp 的 `getAgentDir()` 返回的当前 agent 目录（通常是 `~/.omp/agent`；profile 或显式 agent 目录会改变它）
 3. 项目配置：`<cwd>/.omp/thinking-translator.json`
 
 项目文件在全局文件之后读取，所以它设置的每个字段都优先。`translatorModels` 是有序链，整体替换：项目里的列表就是该项目的完整链，`null` 清空它，不写则沿用全局链。
@@ -154,7 +154,7 @@ init 命令写入的是一个禁用状态的模板，不会替你选模型。你
 4. 每一行都要通过按行判断，并与所有已跟踪的块比对：把 Markdown 行内代码排除在语言判断之外后，它的正文必须含有拉丁字母且拉丁字母多于中文字符，并且必须是某个已观察到的块里的完整行。“完整”指后面跟着换行，或位于一个已结束块的末尾。因此还在逐字显示的半行会等待，而不是被翻译成一串用完即弃的片段；回放的历史不匹配任何已跟踪的块，从不分发。
 5. 每段行文本在同一条翻译模型链（模型、顺序及各自的 effort）和目标语言下最多翻译一次：第一次分发创建它的槽位，并通过模型链发出一个独立的流式请求，之后的渲染都复用这个槽位。慢的行不会阻塞同块的其他行，每一行都按原顺序落回原位。
 6. `render()`（ANSI 终端）和 `describe()`（Tern）都经过同一个 `collect()`：分发、在表里查找每个显示的行、把已完成的格标记为已绘制，并返回已有译文的行和 `done/total` 计数。`render()` 在该块下方画框；`describe()` 返回上文描述的原生 section，内容没变时返回同一个节点对象。失败的模型把请求交给链里的下一个模型，丢弃它已输出的部分文本。如果累积的流中出现了提示词内部的 `SOURCE_TEXT_BEGIN` 标记，扩展立即中止这次模型尝试并按同类失败处理，所以标记和回显的原文不会成为一条完成的译文。整条链失败时以退避（500 ms、2 s、6 s）从第一个模型重试，之后才变成失败行。每次译文到达或失败都会调用宿主提供的 `requestRender`，所以宿主仍在渲染的框或 section 会持续填充。
-7. 一条译文完成时，扩展检查框是否画过这个格。如果没有，且 Tern 没有 describe 过该组件，它把译文放进队列做短暂防抖，然后输出一条 `ctx.ui.notify` 内容，包含队列里的译文和一个 `思考翻译 · 第 N 块` 标题。刷新前发生的重绘会把该格标记为已绘制，并从这次内容里移除。如果中间没有宿主聊天事件，下一次 notify 会重新包含上一次的内容，因为宿主可能会替换同一个状态行；`message_start`、`message_update` 或 `message_end` 在聊天内容挂载或变化后开始一份新的内容。
+7. 一条译文完成时，扩展检查框是否画过这个格。如果没有，且 Tern 没有 describe 过该组件，它把译文和 thinking 块的数字下标放进队列做短暂防抖，然后输出一条 `ctx.ui.notify` 内容。`Thinking translation · Block N` / `思考翻译 · 第 N 块` 标题在刷新时按当前界面语言生成，包括这次合并的旧行；队列不保存已翻译的块标签。刷新前发生的重绘会把该格标记为已绘制，并从这次内容里移除。如果中间没有宿主聊天事件，下一次 notify 会重新包含上一次的内容，因为宿主可能会替换同一个状态行；`message_start` 和 `toolcall_start` 在新聊天内容挂载后开始一份新的内容。
 8. 译文只存在于内存表中，在会话开始、切换会话和会话关闭时连同待发的通知队列和上一次的内容一起丢弃。不向会话记录追加任何内容，也从不把译文作为模型输入回送；见[上下文边界](#上下文边界)。
 
 ## 上下文边界
@@ -189,7 +189,7 @@ init 命令写入的是一个禁用状态的模板，不会替你选模型。你
 - **翻译请求本身。** 每条符合条件的 thinking 行都作为一个独立请求发给配置的翻译模型（`extensions/thinking-translator.ts:358-566`），与 agent 对话分开；某个模型失败时，同一行会发给链里的下一个模型，所以 `translatorModels` 里的每个服务方都可能收到它。“不在 agent 上下文里”不等于“不发给任何模型”：这些服务方能看到你的 thinking 文本，并按它们自己的政策保留。
 - **由显示派生的产物。** 终端 scrollback、流内 notify 行、终端录屏，以及 omp 自己的 `/debug-transcript`（把渲染出的行转储到临时文件，`command-controller.ts:225-236`）按设计都包含译文行。这是可观测性界面，不是对话上下文。
 - **未测试的路径。** 压缩检查是在一个恢复的已持久化会话上运行的，所以恢复只在“检查过其规范消息、服务方 payload 和压缩输入”的意义上被覆盖——没有验证历史译文会重新渲染，也没有走遍所有恢复 UI 路径。会话导出/导入序列化器和分支切换完全没有测试。
-- **版本范围。** 证据针对本扩展的这个版本在 omp 18.1.19 上（notify 检查在 18.1.21 上重做）。这一保证依赖宿主的渲染器契约和上文引用的请求/压缩路径，而不是有文档的 API 承诺，所以宿主升级后要重新验证；当前钉住的版本是 18.8.7，金丝雀运行和引用的宿主代码路径都来自更早的版本，在 18.8.7 上没有重做。
+- **版本范围。** 证据针对本扩展的这个版本在 omp 18.1.19 上（notify 检查在 18.1.21 上重做）。这一保证依赖宿主的渲染器契约和上文引用的请求/压缩路径，而不是有文档的 API 承诺，所以宿主升级后要重新验证；开发依赖跟随最新发布版，这些历史金丝雀检查没有在每次发布上重做。
 
 ## 限制
 
@@ -218,5 +218,5 @@ pnpm check
 
 - `extensions/thinking-translator.ts` —— 扩展本体：渲染器注册、事件处理、翻译分发和配置命令。
 - `tests/thinking-translator.test.ts` —— 配置处理和翻译辅助函数的单元测试。
-- `package.json` —— 声明 `omp.extensions` 入口和钉住版本的 `devDependencies` 的 manifest。
+- `package.json` —— 声明 `omp.extensions` 入口和仅用于开发的宿主依赖的 manifest。
 - `README.md` —— 英文说明；`README.zh-CN.md` 是本文件，即它的简体中文版。

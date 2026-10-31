@@ -267,7 +267,7 @@ test("splitTranslationLines trims outer indent but keeps internal spacing", () =
 
 test("buildLateRows omits translations whose boxes were already painted", () => {
 	const paintedOnly = __testing.buildLateRows(
-		[{ blockLabel: blockLabel(1), text: "已经画进框里", painted: true }],
+		[{ thinkingIndex: 0, text: "已经画进框里", painted: true }],
 		undefined,
 		false,
 	);
@@ -275,8 +275,8 @@ test("buildLateRows omits translations whose boxes were already painted", () => 
 
 	const mixed = __testing.buildLateRows(
 		[
-			{ blockLabel: blockLabel(1), text: "已经画进框里", painted: true },
-			{ blockLabel: blockLabel(1), text: "还没有画上", painted: false },
+			{ thinkingIndex: 0, text: "已经画进框里", painted: true },
+			{ thinkingIndex: 0, text: "还没有画上", painted: false },
 		],
 		undefined,
 		false,
@@ -287,8 +287,8 @@ test("buildLateRows omits translations whose boxes were already painted", () => 
 test("buildLateRows merges back-to-back late translations into one payload", () => {
 	const payload = __testing.buildLateRows(
 		[
-			{ blockLabel: blockLabel(2), text: "第一段译文", painted: false },
-			{ blockLabel: blockLabel(2), text: "第二段译文", painted: false },
+			{ thinkingIndex: 1, text: "第一段译文", painted: false },
+			{ thinkingIndex: 1, text: "第二段译文", painted: false },
 		],
 		undefined,
 		false,
@@ -298,21 +298,21 @@ test("buildLateRows merges back-to-back late translations into one payload", () 
 
 test("buildLateRows carries the previous payload only while coalescing is possible", () => {
 	const previous = __testing.buildLateRows(
-		[{ blockLabel: blockLabel(2), text: "上一段译文", painted: false }],
+		[{ thinkingIndex: 1, text: "上一段译文", painted: false }],
 		undefined,
 		false,
 	);
 	assert.ok(previous);
 
 	const merged = __testing.buildLateRows(
-		[{ blockLabel: blockLabel(2), text: "新的一段译文", painted: false }],
+		[{ thinkingIndex: 1, text: "新的一段译文", painted: false }],
 		previous,
 		true,
 	);
 	assert.equal(merged?.text, `${lateHeader([blockLabel(2)])}\n上一段译文\n新的一段译文`);
 
 	const fresh = __testing.buildLateRows(
-		[{ blockLabel: blockLabel(3), text: "下一块译文", painted: false }],
+		[{ thinkingIndex: 2, text: "下一块译文", painted: false }],
 		previous,
 		false,
 	);
@@ -322,8 +322,8 @@ test("buildLateRows carries the previous payload only while coalescing is possib
 test("buildLateRows keeps distinct block sources in one header line", () => {
 	const payload = __testing.buildLateRows(
 		[
-			{ blockLabel: blockLabel(1), text: "第一块译文", painted: false },
-			{ blockLabel: blockLabel(2), text: "第二块译文", painted: false },
+			{ thinkingIndex: 0, text: "第一块译文", painted: false },
+			{ thinkingIndex: 1, text: "第二块译文", painted: false },
 		],
 		undefined,
 		false,
@@ -331,3 +331,37 @@ test("buildLateRows keeps distinct block sources in one header line", () => {
 	assert.equal(payload?.text, `${lateHeader([blockLabel(1), blockLabel(2)])}\n第一块译文\n第二块译文`);
 });
 
+
+test("buildLateRows localizes queued and coalesced block indices at notification time", () => {
+	const previousLanguage = process.env[LANGUAGE_ENV];
+	try {
+		for (const [initial, current, expectedHeader] of [
+			["en", "zh", "思考翻译 · 第 2 块、第 1 块"],
+			["zh", "en", "Thinking translation · Block 2, Block 1"],
+		]) {
+			process.env[LANGUAGE_ENV] = initial;
+			const queued = [
+				{ thinkingIndex: 1, text: "older", painted: false },
+				{ thinkingIndex: 0, text: "newer", painted: false },
+				{ thinkingIndex: 1, text: "same block", painted: false },
+			];
+			const previous = __testing.buildLateRows(queued.slice(0, 1), undefined, false);
+			assert.ok(previous);
+			assert.deepEqual(previous.rows, [{ thinkingIndex: 1, text: "older" }]);
+
+			process.env[LANGUAGE_ENV] = current;
+			const fresh = __testing.buildLateRows(queued, undefined, false);
+			const coalesced = __testing.buildLateRows(queued.slice(1), previous, true);
+			assert.equal(fresh?.text, `${expectedHeader}\nolder\nnewer\nsame block`);
+			assert.equal(coalesced?.text, fresh?.text);
+			assert.deepEqual(coalesced?.rows, fresh?.rows);
+			assert.equal(
+				__testing.buildLateRows(queued.map((row) => ({ ...row, painted: true })), previous, true),
+				undefined,
+			);
+		}
+	} finally {
+		if (previousLanguage === undefined) delete process.env[LANGUAGE_ENV];
+		else process.env[LANGUAGE_ENV] = previousLanguage;
+	}
+});

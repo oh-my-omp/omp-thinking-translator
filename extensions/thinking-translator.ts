@@ -47,8 +47,8 @@ type NotifierContext = {
 	ui?: { notify?: (message: string, level?: NotifyLevel) => void };
 	cwd?: string;
 };
-type LateRowCandidate = Readonly<{ blockLabel: string; text: string; painted: boolean }>;
-type LatePayloadRow = Readonly<{ blockLabel: string; text: string }>;
+type LateRowCandidate = Readonly<{ thinkingIndex: number; text: string; painted: boolean }>;
+type LatePayloadRow = Readonly<{ thinkingIndex: number; text: string }>;
 type LateRowsPayload = Readonly<{ text: string; rows: readonly LatePayloadRow[] }>;
 
 export function buildLateRows(
@@ -58,9 +58,11 @@ export function buildLateRows(
 ): LateRowsPayload | undefined {
 	const pending = queued.filter((row) => !row.painted);
 	if (pending.length === 0) return undefined;
-	const currentRows = pending.map(({ blockLabel, text }) => ({ blockLabel, text }));
+	const currentRows = pending.map(({ thinkingIndex, text }) => ({ thinkingIndex, text }));
 	const rows = coalescing && previousPayload ? [...previousPayload.rows, ...currentRows] : currentRows;
-	const blockLabels = [...new Set(rows.map((row) => row.blockLabel))];
+	const blockLabels = [...new Set(rows.map((row) => row.thinkingIndex))].map((index) =>
+		tr(`Block ${index + 1}`, `第 ${index + 1} 块`),
+	);
 	return {
 		text: [tr(`Thinking translation · ${blockLabels.join(", ")}`, `思考翻译 · ${blockLabels.join("、")}`), ...rows.map((row) => row.text)].join("\n"),
 		rows,
@@ -134,7 +136,7 @@ export default function thinkingTranslator(pi: ExtensionAPI) {
 	 * 译文先进入待发送队列；条目持有 cell，所以去抖期间若重绘赶上了，flush 会按最新 painted
 	 * 快照把它过滤掉，不会再把已经画进 thinking 框的译文重复送进 transcript。
 	 */
-	const lateQueue: { blockLabel: string; text: string; cell: TranslationCell }[] = [];
+	const lateQueue: { thinkingIndex: number; text: string; cell: TranslationCell }[] = [];
 	let lateNotifyTimer: NodeJS.Timeout | undefined;
 	let lastLatePayload: LateRowsPayload | undefined;
 	let chatContentGeneration = 0;
@@ -154,7 +156,6 @@ export default function thinkingTranslator(pi: ExtensionAPI) {
 	pi.registerAssistantThinkingRenderer((context, theme) => {
 		// 展示文本每次变化都会重建组件，工厂期的拆分就是当前可见行。
 		const sources = splitTranslationLines(context.text);
-		const blockLabel = tr(`Block ${context.thinkingIndex + 1}`, `第 ${context.thinkingIndex + 1} 块`);
 		requestRender = context.requestRender;
 		trace("factory", { thinkingIndex: context.thinkingIndex, contentIndex: context.contentIndex, textLen: context.text.length, sources: sources.length, liveBlocks: liveBlocks.size, hasCtx: latestContext !== undefined, hasConfig: activeConfig !== undefined });
 		// 每帧都来；只在格状态签名变化时记一条，否则 trace 文件会被重绘刷爆。
@@ -171,7 +172,7 @@ export default function thinkingTranslator(pi: ExtensionAPI) {
 			);
 		/** ANSI 行与原生描述共用：分发、取格、标记 painted；没有可画的正文时返回 undefined。 */
 		const collect = (width: number | undefined): TranslationView | undefined => {
-			dispatch(sources, context.requestRender, blockLabel);
+			dispatch(sources, context.requestRender, context.thinkingIndex);
 			const config = activeConfig;
 			if (!config) {
 				if (lastRenderSig !== "no-config") trace("render", { thinkingIndex: context.thinkingIndex, reason: "no-config" });
@@ -303,7 +304,7 @@ export default function thinkingTranslator(pi: ExtensionAPI) {
 			return;
 		}
 		const payload = buildLateRows(
-			lateQueue.map(({ blockLabel, text, cell }) => ({ blockLabel, text, painted: cell.painted })),
+			lateQueue.map(({ thinkingIndex, text, cell }) => ({ thinkingIndex, text, painted: cell.painted })),
 			lastLatePayload,
 			lastLatePayload !== undefined && lastLateNotifyGeneration === chatContentGeneration,
 		);
@@ -370,7 +371,7 @@ export default function thinkingTranslator(pi: ExtensionAPI) {
 	 * 重绘回调取自发起分发的那个组件，而不是模块里"最后一次"的那个：后者会被下一块的工厂覆盖，
 	 * 译文回来时催的就不是自己那一块。
 	 */
-	function dispatch(sources: readonly string[], notify: () => void, blockLabel: string): void {
+	function dispatch(sources: readonly string[], notify: () => void, thinkingIndex: number): void {
 		const ctx = latestContext;
 		if (!ctx || sources.length === 0) return;
 		const config = (activeConfig ??= loadConfig(ctx));
@@ -394,7 +395,7 @@ export default function thinkingTranslator(pi: ExtensionAPI) {
 			if (canonical !== undefined && !translations.has(cellKey(config, canonical))) missing.push(canonical);
 		}
 		if (missing.length === 0) return;
-		trace("dispatch", { blockLabel, sources: sources.length, missing: missing.length });
+		trace("dispatch", { thinkingIndex, sources: sources.length, missing: missing.length });
 		const signal = controller.signal;
 		// 先占格：模型解析可能要等一次网络发现，期间的重绘不能再为同一行发起分发。
 		for (const line of missing) {
@@ -403,7 +404,7 @@ export default function thinkingTranslator(pi: ExtensionAPI) {
 			if (translations.has(key)) continue;
 			const cell: TranslationCell = { progress: { status: "pending" }, painted: false };
 			translations.set(key, cell);
-			void translateLine(cell, line, ctx, config, signal, notify).then(() => noteTranslationSettled(cell, blockLabel, signal));
+			void translateLine(cell, line, ctx, config, signal, notify).then(() => noteTranslationSettled(cell, thinkingIndex, signal));
 		}
 	}
 
@@ -412,10 +413,10 @@ export default function thinkingTranslator(pi: ExtensionAPI) {
 	 * 那一格若仍未画上去，就先排进 transcript notify 队列；去抖期间的重绘会由 flush 的 painted
 	 * 快照过滤掉，避免已经画进框的译文再次出现。
 	 */
-	function noteTranslationSettled(cell: TranslationCell, blockLabel: string, signal: AbortSignal): void {
-		trace("settled", { blockLabel, status: cell.progress.status, painted: cell.painted, aborted: signal.aborted });
+	function noteTranslationSettled(cell: TranslationCell, thinkingIndex: number, signal: AbortSignal): void {
+		trace("settled", { thinkingIndex, status: cell.progress.status, painted: cell.painted, aborted: signal.aborted });
 		if (signal.aborted || nativeSeen || cell.progress.status !== "done" || !cell.progress.translation || cell.painted) return;
-		lateQueue.push({ blockLabel, text: cell.progress.translation, cell });
+		lateQueue.push({ thinkingIndex, text: cell.progress.translation, cell });
 		scheduleLateNotify();
 	}
 
