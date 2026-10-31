@@ -3,6 +3,10 @@ import assert from "node:assert/strict";
 import { __testing } from "../extensions/thinking-translator.ts";
 import { LANGUAGE_ENV, language, resolveLanguage, tr } from "../extensions/i18n.ts";
 import { formatThinkingForDisplay } from "../node_modules/@oh-my-pi/pi-tui/src/chat/thinking-display.ts";
+
+// Error-message assertions below use English regardless of the developer's locale or omomp config.
+process.env[LANGUAGE_ENV] = "en";
+
 const blockLabel = (index: number): string => tr(`Block ${index}`, `第 ${index} 块`);
 const lateHeader = (labels: readonly string[]): string =>
 	tr(`Thinking translation · ${labels.join(", ")}`, `思考翻译 · ${labels.join("、")}`);

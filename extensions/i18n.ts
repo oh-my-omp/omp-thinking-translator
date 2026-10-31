@@ -17,7 +17,7 @@ type BunRuntime = {
 let omompLanguageRead = false;
 let omompLanguage: Language | undefined;
 
-/** Resolve the language configured by the one authoritative omomp file, at most once per process. */
+/** Resolve the language configured by the one unambiguous omomp file, at most once per process. */
 function readOmompLanguage(): Language | undefined {
 	if (omompLanguageRead) return omompLanguage;
 	omompLanguageRead = true;
@@ -34,7 +34,8 @@ function readOmompLanguage(): Language | undefined {
 		if (existing.length !== 1) return undefined;
 		const candidate = existing[0]!;
 		const parsed = parseConfig(candidate.name, readFileSync(candidate.path, "utf8"));
-		return parseLanguage(parsed);
+		omompLanguage = parseLanguage(parsed);
+		return omompLanguage;
 	} catch {
 		return undefined;
 	}
@@ -52,10 +53,9 @@ function parseLanguage(value: unknown): Language | undefined {
 	if (!value || typeof value !== "object" || Array.isArray(value) || !("omomp-lang" in value)) return undefined;
 	const section = value["omomp-lang"];
 	if (!section || typeof section !== "object" || Array.isArray(section) || !("language" in section)) return undefined;
+	if (Object.keys(section).length !== 1) return undefined;
 	const configured = section["language"];
-	if (typeof configured !== "string") return undefined;
-	const normalized = configured.trim().toLowerCase();
-	return normalized === "en" || normalized === "zh" ? normalized : undefined;
+	return configured === "en" || configured === "zh" ? configured : undefined;
 }
 
 /** Resolve a supplied environment and optional omomp value in the contract's priority order. */
@@ -70,7 +70,7 @@ export function resolveLanguage(env: Readonly<Record<string, string | undefined>
 	return "en";
 }
 
-/** Resolve the UI language using the launch environment, omomp file, then locale. */
+/** Resolve the UI language using the current environment, cached omomp setting, then locale. */
 export function language(): Language {
 	const explicit = process.env[LANGUAGE_ENV]?.trim().toLowerCase();
 	if (explicit === "en" || explicit === "zh") return explicit;
