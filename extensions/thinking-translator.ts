@@ -8,15 +8,18 @@ import { cfgExpandThinkingBlocks } from "@oh-my-pi/pi-coding-agent/session/setti
 import { tr } from "./i18n";
 import { Box, Markdown, Text, node, span } from "@oh-my-pi/pi-tui";
 import type { Component, DescribeContext, NativeEventTarget, NativeNode, NativeUiEvent } from "@oh-my-pi/pi-tui";
+import type { AssistantThinkingRenderContext } from "@oh-my-pi/pi-tui/chat/extension-types";
+import type { Theme } from "@oh-my-pi/pi-tui/theme/theme";
 
 /** 宿主的推理等级（pi-catalog 的 const enum `Effort`）；插件解析不到 pi-catalog，只能从 pi-ai 的选项类型取。 */
 type Effort = NonNullable<SimpleStreamOptions["reasoning"]>;
 /** 配置里的推理强度：宿主等级的字符串取值，加上关闭推理的 `off`。 */
 type EffortSetting = "off" | `${Effort}`;
 type ModelRef = { provider: string; id: string; effort?: EffortSetting };
+/** 一行译文只在整行完成或最终失败后显示；请求仍流式接收，用于尽早发现协议标记并换模型。 */
 type TranslationProgress =
 	| { status: "pending" }
-	| { status: "streaming" | "done"; translation: string }
+	| { status: "done"; translation: string }
 	| { status: "error"; error: string };
 /**
  * 一行一个共享状态格；文本相同的行共用同一次请求。
@@ -28,6 +31,11 @@ type TranslationCell = { progress: TranslationProgress; painted: boolean };
 type LiveBlock = { raw: string; ended: boolean };
 /** 一个 thinking 块当前可画的译文：已结束的格数、总格数和有正文的行。 */
 type TranslationView = { completed: number; total: number; rows: string[] };
+/** 一个追踪块的长期渲染器：宿主每次重建消息都换新上下文，组件身份保持不变。 */
+type BlockRenderer = {
+	readonly component: Component & NativeEventTarget;
+	update(context: AssistantThinkingRenderContext, sources: readonly string[], theme: Theme): void;
+};
 type ResolvedTranslatorConfig = {
 	enabled: boolean;
 	targetLanguage: string;
@@ -131,6 +139,11 @@ export default function thinkingTranslator(pi: ExtensionAPI) {
 	// 本进程里观察到的 thinking 块原文与收尾状态。判定"这一行属于生成中的块"靠内容匹配而不是
 	// contentIndex：组件重建的时机与消息边界不对齐，任何按索引的键都会在下一条消息里指错块。
 	const liveBlocks = new Map<string, LiveBlock>();
+	/**
+	 * 每个追踪块一个长期渲染器，键与 liveBlocks 相同。宿主在展示文本每次变化时都会重新调用工厂；
+	 * 若每次返回新组件，原生后端会按新组件身份把整个翻译 section 删除再添加。
+	 */
+	const blockRenderers = new Map<string, BlockRenderer>();
 
 	/**
 	 * 译文先进入待发送队列；条目持有 cell，所以去抖期间若重绘赶上了，flush 会按最新 painted
@@ -154,10 +167,33 @@ export default function thinkingTranslator(pi: ExtensionAPI) {
 	 * message_end 每次都递增 generation，表示 chat 子节点已挂载或变更，之后必须从新 payload 开始。
 	 */
 	pi.registerAssistantThinkingRenderer((context, theme) => {
-		// 展示文本每次变化都会重建组件，工厂期的拆分就是当前可见行。
+		// 展示文本每次变化都会调用工厂，工厂期的拆分就是当前可见行。
 		const sources = splitTranslationLines(context.text);
 		requestRender = context.requestRender;
 		trace("factory", { thinkingIndex: context.thinkingIndex, contentIndex: context.contentIndex, textLen: context.text.length, sources: sources.length, liveBlocks: liveBlocks.size, hasCtx: latestContext !== undefined, hasConfig: activeConfig !== undefined });
+		if (sources.length === 0) return undefined;
+		// 认不出所属块时（历史回放，或块的第一行还没揭示完整）没有可复用的身份：没有译文可画就不挂组件，
+		// 否则每次重建都会挂一个新的空组件；只有已译过的行（例如移出追踪上限的旧块）才为这次渲染单独建组件。
+		const blockKey = resolveTrackedBlockKey(liveBlocks, sources);
+		if (blockKey === undefined) {
+			const config = activeConfig;
+			if (!config || !sources.some((source) => translations.has(cellKey(config, source)))) return undefined;
+			return createBlockRenderer(context, sources, theme).component;
+		}
+		const existing = blockRenderers.get(blockKey);
+		if (existing) {
+			existing.update(context, sources, theme);
+			return existing.component;
+		}
+		const created = createBlockRenderer(context, sources, theme);
+		blockRenderers.set(blockKey, created);
+		return created.component;
+	});
+
+	function createBlockRenderer(initialContext: AssistantThinkingRenderContext, initialSources: readonly string[], initialTheme: Theme): BlockRenderer {
+		let context = initialContext;
+		let sources = initialSources;
+		let theme = initialTheme;
 		// 每帧都来；只在格状态签名变化时记一条，否则 trace 文件会被重绘刷爆。
 		let lastRenderSig = "";
 		const box = new Box(1, 1, (text) => theme.bg("customMessageBg", text));
@@ -172,7 +208,8 @@ export default function thinkingTranslator(pi: ExtensionAPI) {
 			);
 		/** ANSI 行与原生描述共用：分发、取格、标记 painted；没有可画的正文时返回 undefined。 */
 		const collect = (width: number | undefined): TranslationView | undefined => {
-			dispatch(sources, context.requestRender, context.thinkingIndex);
+			// 译文晚到时按组件当前的上下文重绘：宿主重建消息后，旧上下文的回调可能已不再对应这块。
+			dispatch(sources, () => context.requestRender(), context.thinkingIndex);
 			const config = activeConfig;
 			if (!config) {
 				if (lastRenderSig !== "no-config") trace("render", { thinkingIndex: context.thinkingIndex, reason: "no-config" });
@@ -194,11 +231,11 @@ export default function thinkingTranslator(pi: ExtensionAPI) {
 			let completed = 0;
 			const rows: string[] = [];
 			for (const cell of cells) {
-				if (cell.progress.status === "done" || cell.progress.status === "error") completed++;
-				const text = cellBody(cell);
-				if (text === undefined) continue;
+				if (cell.progress.status === "pending") continue;
+				completed++;
+				const text = cellBody(cell.progress);
 				rows.push(text);
-				// 有正文画出去，框里就看得见译文；真正需要兜底的是一个字都没画上的格。
+				// 画出去的译文框里就看得见；真正需要兜底的是一个字都没画上的格。
 				if (cell.progress.status === "done" && !cell.painted) {
 					cell.painted = true;
 					trace("painted", { thinkingIndex: context.thinkingIndex, text: text.slice(0, 40), native: nativeSeen });
@@ -208,48 +245,69 @@ export default function thinkingTranslator(pi: ExtensionAPI) {
 			if (rows.length === 0) return undefined;
 			return { completed, total: cells.length, rows };
 		};
+
+		// 原生描述：section 根节点只在翻译中/已完成或折叠状态变化时换新对象；标题文字和正文各是独立组件。
+		// 一行译完只改这两个组件自己的节点，宿主不会因为根节点换了而删除并重新添加整个 section 的子节点。
+		let view: TranslationView | undefined;
+		let labelText = "";
+		let labelNode: NativeNode | undefined;
+		const label: Component = {
+			render: () => [],
+			describe(): NativeNode | null {
+				if (!view) return null;
+				const text = heading(view);
+				if (!labelNode || text !== labelText) {
+					labelText = text;
+					labelNode = node("text", { spans: [span(text, "muted")] });
+				}
+				return labelNode;
+			},
+		};
+		let contentText = "";
+		let contentNode: NativeNode | undefined;
+		const content: Component = {
+			render: () => [],
+			describe(): NativeNode | null {
+				if (!view) return null;
+				const text = view.rows.join("\n\n");
+				if (!contentNode || text !== contentText) {
+					contentText = text;
+					contentNode = node("md", { text });
+				}
+				return contentNode;
+			},
+		};
+		// 与宿主一致：翻译中是 starburst 加标题，译完只剩标题。
+		const liveHead = node("row", { gap: "sm" }, [node("spinner", { style: "starburst", role: "omp.thinking.spin" }), label], "head");
+		const settledHead = node("row", { gap: "sm" }, [label], "head");
 		// 用户在 Tern 里折叠/展开的结果；没操作过就与宿主 thinking 一致：翻译中展开，译完按宿主
 		// `expandThinkingBlocks` 决定——关时折叠，开时保持展开。设置每次 describe 都从宿主 settings 读，
 		// 用户改设置后下一帧即生效；不缓存副本，宿主是这个值唯一的源头。
 		let userCollapsed: boolean | undefined;
-		// 内容没变就返回同一个节点对象，后端据此跳过这一块的 diff。
-		let lastNode: NativeNode | null = null;
-		let lastNodeSig = "";
+		let sectionNode: NativeNode | undefined;
+		let sectionSig = "";
 		const component: Component & NativeEventTarget = {
 			render(width: number): readonly string[] {
-				const view = collect(width);
-				if (!view) return [];
-				title.setText(theme.fg("accent", heading(view)));
-				body.setText(view.rows.join("\n\n"));
+				const current = collect(width);
+				if (!current) return [];
+				title.setText(theme.fg("accent", heading(current)));
+				body.setText(current.rows.join("\n\n"));
 				return box.render(width);
 			},
 			// Tern Surface Protocol：与宿主 thinking 同构的 section（role omp.thinking*），ANSI 终端不会走到这里。
 			describe(cx: DescribeContext): NativeNode | null {
 				nativeSeen = true;
 				if (!cx.supports("section") || !cx.supports("md")) return null;
-				const view = collect(undefined);
-				if (!view) {
-					lastNode = null;
-					lastNodeSig = "";
-					return null;
-				}
+				view = collect(undefined);
+				if (!view) return null;
 				const live = view.completed < view.total;
 				const collapsed = userCollapsed ?? (!live && !cfgExpandThinkingBlocks.get(pi.pi.settings));
-				const text = view.rows.join("\n\n");
-				const nodeSig = `${live ? "L" : "D"}${collapsed ? "C" : "O"}|${heading(view)}|${text}`;
-				if (lastNode && nodeSig === lastNodeSig) return lastNode;
-				const label = heading(view);
-				// 与宿主一致：翻译中是 starburst 加标题，译完是静态一行。
-				const head = live
-					? node("row", { gap: "sm" }, [node("spinner", { style: "starburst", role: "omp.thinking.spin" }), node("text", { spans: [span(label, "muted")] })], "head")
-					: node("text", { spans: [span(label, "muted")] }, undefined, "head");
-				lastNode = node(
-					"section",
-					{ role: live ? "omp.thinking.live" : "omp.thinking", collapsible: true, collapsed },
-					[head, node("md", live ? { text, stream: true } : { text }, undefined, "body")],
-				);
-				lastNodeSig = nodeSig;
-				return lastNode;
+				const sig = `${live ? "L" : "D"}${collapsed ? "C" : "O"}`;
+				if (!sectionNode || sig !== sectionSig) {
+					sectionSig = sig;
+					sectionNode = node("section", { role: live ? "omp.thinking.live" : "omp.thinking", collapsible: true, collapsed }, [live ? liveHead : settledHead, content]);
+				}
+				return sectionNode;
 			},
 			handleNativeEvent(event: NativeUiEvent): void {
 				// 根节点（section 本身）的折叠开关；key 为空串。
@@ -261,8 +319,15 @@ export default function thinkingTranslator(pi: ExtensionAPI) {
 				box.invalidate();
 			},
 		};
-		return component;
-	});
+		return {
+			component,
+			update(nextContext, nextSources, nextTheme): void {
+				context = nextContext;
+				sources = nextSources;
+				theme = nextTheme;
+			},
+		};
+	}
 
 	pi.registerCommand("thinking-translator", {
 		description: tr("Show or initialize thinking-translator configuration", "查看或初始化 thinking-translator 配置"),
@@ -344,6 +409,7 @@ export default function thinkingTranslator(pi: ExtensionAPI) {
 		translations.clear();
 		clearLateNotifications();
 		liveBlocks.clear();
+		blockRenderers.clear();
 		activeConfig = undefined;
 		latestContext = undefined;
 		configErrorNotified.clear();
@@ -432,6 +498,7 @@ export default function thinkingTranslator(pi: ExtensionAPI) {
 		for (const key of liveBlocks.keys()) {
 			if (liveBlocks.size <= MAX_TRACKED_BLOCKS) break;
 			liveBlocks.delete(key);
+			blockRenderers.delete(key);
 		}
 	});
 
@@ -466,25 +533,20 @@ export default function thinkingTranslator(pi: ExtensionAPI) {
 }
 
 /**
- * 只有真正有正文的格才占行：等待中和刚开始流式（还没有一个字）的格返回 undefined，
- * 进度只体现在标题的计数里。否则一个五行的 thinking 会先撑出五行"等待翻译…"，
- * 而且一旦这几行被宿主提交进原生历史，那片占位就永久留在 scrollback 里。
+ * 结束的格才占行：等待中的格不画，进度只体现在标题的计数里。否则一个五行的 thinking 会先撑出
+ * 五行"等待翻译…"，而且一旦这几行被宿主提交进原生历史，那片占位就永久留在 scrollback 里。
  */
-function cellBody(cell: TranslationCell): string | undefined {
-	switch (cell.progress.status) {
-		case "pending":
-			return undefined;
-		case "streaming":
-			return cell.progress.translation || undefined;
+function cellBody(progress: Exclude<TranslationProgress, { status: "pending" }>): string {
+	switch (progress.status) {
 		case "done":
-			return cell.progress.translation;
+			return progress.translation;
 		case "error":
-			return `${tr("Translation failed:", "翻译失败：")} ${cell.progress.error.replace(/\s+/g, " ").slice(0, 80)}`;
+			return `${tr("Translation failed:", "翻译失败：")} ${progress.error.replace(/\s+/g, " ").slice(0, 80)}`;
 	}
 }
 
 /**
- * 每行独立请求并立即消费增量，避免慢行阻塞同块其他译文。
+ * 每行独立请求，避免慢行阻塞同块其他译文；整行译完才写入格并重绘，流式中途的半句不显示。
  * 每一轮都按配置顺序从第一个模型开始，前一个失败才换下一个；整条链都失败才退避，下一轮又从第一个开始。
  * 哪个模型失败过不留任何记忆：下一行、下一轮都先用第一个。
  */
@@ -502,18 +564,17 @@ async function translateLine(
 			try {
 				const model = await resolveModel(ctx, modelRef);
 				if (signal.aborted) return;
-				await streamTranslation(cell, source, ctx, config.targetLanguage, model, modelRef.effort, signal, requestRender);
+				const translation = await streamTranslation(source, ctx, config.targetLanguage, model, modelRef.effort, signal);
+				if (translation === undefined) return;
+				trace("done", { source: source.slice(0, 40), translation: translation.slice(0, 40) });
+				cell.progress = { status: "done", translation };
+				requestRender();
 				return;
 			} catch (error) {
 				if (signal.aborted) return;
 				const message = `${modelLabel(modelRef)}: ${error instanceof Error ? error.message : String(error)}`;
 				trace("modelFailed", { source: source.slice(0, 40), round, message });
 				failures.push(message);
-				// 换下一个模型前撤掉上一个模型流了一半的译文，不让两份译文拼在一起。
-				if (cell.progress.status !== "pending") {
-					cell.progress = { status: "pending" };
-					requestRender();
-				}
 			}
 		}
 		// 翻译模型不在线、限流、连接中断都是可恢复的：退避重试，中途保持"等待"而不是先报错。
@@ -544,19 +605,20 @@ function sleepUnlessAborted(delay: number, signal: AbortSignal): Promise<boolean
 	return promise;
 }
 
-/** 用一个已解析的模型完成一次请求；任何失败都抛给上层换下一个模型。 */
+/**
+ * 用一个已解析的模型完成一次请求，返回清理后的整行译文；会话被中止时返回 undefined。
+ * 任何失败都抛给上层换下一个模型；流式接收只用于尽早发现协议标记，半句不写入格。
+ */
 async function streamTranslation(
-	cell: TranslationCell,
 	source: string,
 	ctx: ExtensionContext,
 	targetLanguage: string,
 	translatorModel: Model<Api>,
 	effort: EffortSetting | undefined,
 	signal: AbortSignal,
-	requestRender: () => void,
-): Promise<void> {
+): Promise<string | undefined> {
 	const auth = await getTranslatorAuth(ctx, translatorModel);
-	if (signal.aborted) return;
+	if (signal.aborted) return undefined;
 	const prompt = buildTranslationPrompt(source, targetLanguage);
 	trace("request", { source: source.slice(0, 60), model: `${translatorModel.provider}/${translatorModel.id}`, effort: effort ?? "default", hasKey: auth.apiKey !== undefined });
 	// 只中断当前模型的请求；外层 signal 仍控制整条翻译任务，marker 命中则抛错让 translateLine 换下一个模型。
@@ -570,22 +632,18 @@ async function streamTranslation(
 	);
 	let translation = "";
 	for await (const event of eventStream) {
-		if (signal.aborted) return;
+		if (signal.aborted) return undefined;
 		if (event.type === "error") throw new Error(event.error.errorMessage || tr(`Translation ${event.reason}`, `翻译${event.reason}`));
 		if (event.type === "text_delta") {
 			translation += event.delta;
 			abortOnSourceTextBegin(translation, attemptController);
-			cell.progress = { status: "streaming", translation };
-			requestRender();
 		}
 	}
-	if (signal.aborted) return;
+	if (signal.aborted) return undefined;
 	// 空响应按失败处理：重试一次往往就有内容，直接落空格只会留下一行空白。
 	const cleaned = cleanTranslation(translation);
 	if (!cleaned) throw new Error(tr("Translator returned empty text", "翻译器返回了空文本"));
-	trace("done", { source: source.slice(0, 40), translation: cleaned.slice(0, 40) });
-	cell.progress = { status: "done", translation: cleaned };
-	requestRender();
+	return cleaned;
 }
 
 /** 模型回显输入协议时立即中断本次请求；抛错复用既有模型链 fallback。 */
@@ -660,6 +718,21 @@ function resolveTrackedLine(blocks: Iterable<LiveBlock>, line: string): string |
 		if (canonical !== undefined) return canonical;
 	}
 	return undefined;
+}
+
+/**
+ * 展示行属于哪个追踪块：按内容认块，取第一条能认回原文的展示行；多个块都含这一行时用后面的行继续区分，
+ * 到最后仍分不开就取最新的块。没有一行认得出（历史回放，或块的第一行还没揭示完整）时返回 undefined。
+ */
+function resolveTrackedBlockKey(blocks: ReadonlyMap<string, LiveBlock>, lines: readonly string[]): string | undefined {
+	let candidates: [string, LiveBlock][] | undefined;
+	for (const line of lines) {
+		const matched = (candidates ?? [...blocks]).filter(([, block]) => matchBlockLine(block.raw, line, block.ended) !== undefined);
+		if (matched.length === 0) continue;
+		if (matched.length === 1) return matched[0]![0];
+		candidates = matched;
+	}
+	return candidates?.at(-1)?.[0];
 }
 
 /** 块标识：消息序号 + 内容块下标。 */
@@ -979,6 +1052,7 @@ export const __testing = {
 	cleanTranslation,
 	matchBlockLine,
 	resolveTrackedLine,
+	resolveTrackedBlockKey,
 	getProjectConfigPath,
 	getGlobalConfigPath,
 	mergeConfig,

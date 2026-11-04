@@ -191,6 +191,33 @@ test("the tail of a streaming block waits for that block to end", () => {
 });
 
 /**
+ * 实测的缺陷：宿主在展示文本每次变化时都会重新调用渲染器工厂，每次换新组件会让原生后端把整个翻译框删掉再添加。
+ * 同一块的每个揭示帧必须认回同一个块，组件才能复用。
+ */
+test("every reveal frame of a block resolves to the same tracked block", () => {
+	const blocks = new Map([
+		["1:0", { raw: "The queue drains at 120 per second.\nSo the retry budget matters.", ended: true }],
+		["2:0", { raw: "Now I compare the three settings.\nThe first one is too slow", ended: false }],
+	]);
+	assert.equal(__testing.resolveTrackedBlockKey(blocks, ["Now I compare the three settings."]), "2:0");
+	assert.equal(__testing.resolveTrackedBlockKey(blocks, ["Now I compare the three settings.", "The first one is too"]), "2:0");
+	assert.equal(__testing.resolveTrackedBlockKey(blocks, ["The queue drains at 120 per second.", "So the retry budget matters."]), "1:0");
+	// 第一行还没揭示完整、或者是从未观察过的历史，都认不出块。
+	assert.equal(__testing.resolveTrackedBlockKey(blocks, ["Now I compare the"]), undefined);
+	assert.equal(__testing.resolveTrackedBlockKey(blocks, ["A line from an older session."]), undefined);
+});
+
+test("blocks sharing a first line are told apart by later lines, newest wins a full tie", () => {
+	const blocks = new Map([
+		["1:0", { raw: "Let me check the config.\nIt uses YAML.", ended: true }],
+		["2:0", { raw: "Let me check the config.\nIt uses JSON.", ended: true }],
+	]);
+	assert.equal(__testing.resolveTrackedBlockKey(blocks, ["Let me check the config.", "It uses YAML."]), "1:0");
+	assert.equal(__testing.resolveTrackedBlockKey(blocks, ["Let me check the config.", "It uses JSON."]), "2:0");
+	assert.equal(__testing.resolveTrackedBlockKey(blocks, ["Let me check the config."]), "2:0");
+});
+
+/**
  * 宿主真的会改写展示文本：prose-only 模式下折叠代码围栏、补省略号、吃掉句末句号、丢掉空注释。
  * 这些改写过的行必须仍能认回原文，否则它们在译文框里永远没有自己的格。
  */
