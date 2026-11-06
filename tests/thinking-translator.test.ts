@@ -4,16 +4,16 @@ import { __testing } from "../extensions/thinking-translator.ts";
 import { LANGUAGE_ENV, language, resolveLanguage, tr } from "../extensions/i18n.ts";
 import { formatThinkingForDisplay } from "../node_modules/@oh-my-pi/pi-tui/src/chat/thinking-display.ts";
 
-// Error-message assertions below use English regardless of the developer's locale or omomp config.
+// Error-message assertions below use English regardless of the developer's locale.
 process.env[LANGUAGE_ENV] = "en";
 
 const blockLabel = (index: number): string => tr(`Block ${index}`, `第 ${index} 块`);
 const lateHeader = (labels: readonly string[]): string =>
 	tr(`Thinking translation · ${labels.join(", ")}`, `思考翻译 · ${labels.join("、")}`);
-test("language resolution follows explicit env, omomp, locale, and call-time changes", () => {
-	assert.equal(resolveLanguage({ OMOMP_LANG: " ZH ", LC_ALL: "en_US.UTF-8" }, "en"), "zh");
-	assert.equal(resolveLanguage({ OMOMP_LANG: "invalid", LC_ALL: "", LC_MESSAGES: "  ", LANG: "zh_CN.UTF-8" }, "en"), "en");
+test("language resolution follows explicit env, locale, and call-time changes", () => {
+	assert.equal(resolveLanguage({ OMOMP_LANG: " ZH ", LC_ALL: "en_US.UTF-8" }), "zh");
 	assert.equal(resolveLanguage({ OMOMP_LANG: "invalid", LC_ALL: "", LC_MESSAGES: "  ", LANG: "zh_CN.UTF-8" }), "zh");
+	assert.equal(resolveLanguage({ OMOMP_LANG: "zh-CN", LANG: "en_US.UTF-8" }), "en");
 	assert.equal(resolveLanguage({ OMOMP_LANG: "invalid", LC_ALL: "en_US.UTF-8", LC_MESSAGES: "zh_CN.UTF-8" }), "en");
 	assert.equal(resolveLanguage({}), "en");
 
