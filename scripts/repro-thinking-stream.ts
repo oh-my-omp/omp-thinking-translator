@@ -13,9 +13,11 @@
  *
  *   bun scripts/repro-thinking-stream.ts --rows 200 [--baseline <extension.ts>] [--gc-off]
  *       GC-heap allocation and pause time from JSC's GC log, post-GC heap and active time; medians
- *       of --runs workers (default 5) for the extension, the null control and, if given, the baseline.
- *       `--gc-off` adds total allocation (GC heap + malloc'd string payloads) from workers that run
- *       with the collector disabled; such a worker holds every byte it allocates until it exits.
+ *       of --runs rounds (default 5), each round running the extension, the null control and, if
+ *       given, the baseline once, so all three see the same machine load.
+ *       `--gc-off` adds total allocation (GC heap + malloc'd string payloads) of the extension and the
+ *       null control from workers that run with the collector disabled; such a worker holds every
+ *       byte it allocates until it exits, which the baseline cannot afford at large --rows.
  *   bun scripts/repro-thinking-stream.ts --rows 800 --snapshot
  *       retained memory of the cell map's key/value strings against their own length
  *   bun scripts/repro-thinking-stream.ts --rows 200 --trace-diff --baseline <extension.ts>
@@ -25,6 +27,11 @@
  *
  * `--shape block` (default) streams all rows as one thinking block, the reveal the findings
  * are about; `--shape session` spreads them over messages of two 25-row blocks.
+ * `--surface ansi` (default) draws every component with `render(width)` the way the ANSI TUI does;
+ * `--surface native` calls `describe(cx)` and the nested components' `describe` the way a Tern
+ * Surface Protocol terminal does (pi-tui `src/native/node.ts`), so no in-process Markdown layout runs.
+ * Workers run one at a time, each under a 2 GiB resident-memory cap and a 10-minute deadline;
+ * the run fails when a worker hits either, and ends by printing the peak worker RSS it saw.
  */
 import { heapStats, memoryUsage as jscMemory } from "bun:jsc";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, writeSync } from "node:fs";
@@ -394,12 +401,18 @@ async function runWorker(options: Options, mode: Mode): Promise<WorkerOutput> {
 		return { ...value, c: "c" in value && Array.isArray(value.c) ? value.c.map(describeTree) : undefined };
 	};
 
+	/** Measured runs serialize nothing: a JSON copy of every described node per frame would be driver allocation that grows with the text. */
 	const renderAll = (mounted: readonly Mounted[]): void => {
 		frame++;
 		renderRequested = false;
 		for (const entry of mounted) {
-			const lines = options.surface === "ansi" ? entry.component.render(WIDTH) : [JSON.stringify(describeTree(entry.component.describe?.(cx) ?? null))];
-			if (record) frames.push({ frame, thinkingIndex: entry.thinkingIndex, lines: [...lines] });
+			if (options.surface === "ansi") {
+				const lines = entry.component.render(WIDTH);
+				if (record) frames.push({ frame, thinkingIndex: entry.thinkingIndex, lines: [...lines] });
+			} else {
+				const described = describeTree(entry.component.describe?.(cx) ?? null);
+				if (record) frames.push({ frame, thinkingIndex: entry.thinkingIndex, lines: [JSON.stringify(described)] });
+			}
 		}
 	};
 	/** One host tick: due translations land, promise chains settle, and a requested repaint is drawn. */
@@ -592,20 +605,46 @@ function parseGcLog(stderr: string): GcLog {
 	throw new Error("GC log has no collection after the end mark");
 }
 
-function spawnWorker(options: Options, extension: string, mode: Mode, gc: "off" | "on" | "logged"): WorkerOutput & { gcLog?: GcLog } {
+/** Every worker runs under a resident-memory cap and a deadline; a worker over the cap is killed and the run fails. */
+const WORKER_MEMORY_CAP_BYTES = 2 * 1024 ** 3;
+const WORKER_TIMEOUT_MS = 10 * 60_000;
+const WORKER_RSS_POLL_MS = 200;
+/** Largest worker RSS seen in this run, printed at the end. */
+let peakWorkerRss = 0;
+
+async function runCapped(argv: readonly string[], env: Record<string, string | undefined>, captureStderr: boolean): Promise<string> {
+	const child = Bun.spawn([...argv], { env, stdout: "inherit", stderr: captureStderr ? "pipe" : "inherit", timeout: WORKER_TIMEOUT_MS, killSignal: "SIGKILL" });
+	let overCap = 0;
+	const poll = setInterval(() => {
+		const rss = Number(Bun.spawnSync(["ps", "-o", "rss=", "-p", String(child.pid)]).stdout.toString().trim()) * 1024;
+		if (rss > peakWorkerRss) peakWorkerRss = rss;
+		if (rss > WORKER_MEMORY_CAP_BYTES) {
+			overCap = rss;
+			child.kill("SIGKILL");
+		}
+	}, WORKER_RSS_POLL_MS);
+	const [exitCode, stderr] = await Promise.all([child.exited, captureStderr ? new Response(child.stderr).text() : ""]);
+	clearInterval(poll);
+	if (overCap) throw new Error(`worker killed at RSS ${mb(overCap)} (cap ${mb(WORKER_MEMORY_CAP_BYTES)}): ${argv.slice(1).join(" ")}`);
+	if (child.signalCode) throw new Error(`worker killed by ${child.signalCode} (deadline ${WORKER_TIMEOUT_MS / 60_000} min): ${argv.slice(1).join(" ")}`);
+	if (exitCode !== 0) throw new Error(`worker exited ${exitCode}: ${argv.slice(1).join(" ")}\n${stderr.slice(-2000)}`);
+	return stderr;
+}
+
+async function spawnWorker(options: Options, extension: string, mode: Mode, gc: "off" | "on" | "logged"): Promise<WorkerOutput & { gcLog?: GcLog }> {
 	const root = mkdtempSync(join(tmpdir(), "ott-repro-"));
 	const out = join(root, "result.json");
 	const env: Record<string, string | undefined> = { ...process.env, OTT_REPRO_ROOT: root, PI_CODING_AGENT_DIR: join(root, "agent"), BUN_JSC_useGC: undefined, BUN_JSC_logGC: undefined };
 	if (gc === "off") env.BUN_JSC_useGC = "0";
 	if (gc === "logged") env.BUN_JSC_logGC = "1";
 	mkdirSync(join(root, "agent"), { recursive: true });
-	const child = Bun.spawnSync(
+	const stderr = await runCapped(
 		[process.execPath, SCRIPT, "--worker", mode, "--rows", String(options.rows), "--shape", options.shape, "--surface", options.surface, "--extension", extension, "--out", out],
-		{ env, stdout: "inherit", stderr: gc === "logged" ? "pipe" : "inherit" },
+		env,
+		gc === "logged",
 	);
-	if (child.exitCode !== 0) throw new Error(`worker ${mode} ${extension} exited ${child.exitCode}: ${child.stderr?.toString().slice(-2000) ?? ""}`);
 	const output = JSON.parse(readFileSync(out, "utf8")) as WorkerOutput;
-	return gc === "logged" ? { ...output, gcLog: parseGcLog(child.stderr.toString()) } : output;
+	return gc === "logged" ? { ...output, gcLog: parseGcLog(stderr) } : output;
 }
 
 const median = (values: readonly number[]): number => {
@@ -615,32 +654,34 @@ const median = (values: readonly number[]): number => {
 };
 const mb = (bytes: number): string => `${(bytes / 1e6).toFixed(2)} MB`;
 
-function measure(options: Options): void {
+/**
+ * Runs every target once per round, so the extension, the null control and the baseline see the
+ * same machine load in each round; medians are taken per target afterwards.
+ */
+async function measure(options: Options): Promise<void> {
 	const targets: [string, string][] = [["extension", options.extension], ["null control", NULL_EXTENSION]];
 	if (options.baseline) targets.push(["baseline", options.baseline]);
-	const summary: Record<string, Record<string, number>> = {};
-	for (const [label, extension] of targets) {
-		const gcAlloc: number[] = [];
-		const gcPause: number[] = [];
-		const alloc: number[] = [];
-		const heap: number[] = [];
-		const malloc: number[] = [];
-		const time: number[] = [];
-		let last: WorkerResult | undefined;
-		for (let run = 0; run < options.runs; run++) {
-			const logged = spawnWorker(options, extension, "measure", "logged");
-			gcAlloc.push(logged.gcLog!.gcAllocBytes);
-			gcPause.push(logged.gcLog!.gcPauseMs);
-			heap.push(logged.result.heapAfterGc);
-			malloc.push(logged.result.mallocAfterGc);
-			time.push(logged.result.activeMs);
-			last = logged.result;
-			if (options.gcOff) alloc.push(spawnWorker(options, extension, "measure", "off").result.allocBytes);
+	const samples = targets.map(() => ({ gcAlloc: [] as number[], gcPause: [] as number[], alloc: [] as number[], heap: [] as number[], malloc: [] as number[], time: [] as number[], last: undefined as WorkerResult | undefined }));
+	for (let run = 0; run < options.runs; run++) {
+		for (const [index, [label, extension]] of targets.entries()) {
+			const sample = samples[index]!;
+			const logged = await spawnWorker(options, extension, "measure", "logged");
+			sample.gcAlloc.push(logged.gcLog!.gcAllocBytes);
+			sample.gcPause.push(logged.gcLog!.gcPauseMs);
+			sample.heap.push(logged.result.heapAfterGc);
+			sample.malloc.push(logged.result.mallocAfterGc);
+			sample.time.push(logged.result.activeMs);
+			sample.last = logged.result;
+			if (options.gcOff && label !== "baseline") sample.alloc.push((await spawnWorker(options, extension, "measure", "off")).result.allocBytes);
 		}
+	}
+	const summary: Record<string, Record<string, number>> = {};
+	for (const [index, [label]] of targets.entries()) {
+		const { gcAlloc, gcPause, alloc, heap, malloc, time, last } = samples[index]!;
 		summary[label] = {
 			gcHeapAllocBytes: median(gcAlloc),
 			gcPauseMs: median(gcPause),
-			...(options.gcOff ? { allocBytesGcOff: median(alloc) } : {}),
+			...(options.gcOff && label !== "baseline" ? { allocBytesGcOff: median(alloc) } : {}),
 			heapAfterGc: median(heap),
 			mallocAfterGc: median(malloc),
 			activeMs: median(time),
@@ -649,12 +690,12 @@ function measure(options: Options): void {
 			notifies: last!.notifies,
 		};
 		console.log(
-			`${label.padEnd(12)} rows=${options.rows} shape=${options.shape} runs=${options.runs}  GC-heap alloc median ${mb(median(gcAlloc))} [${gcAlloc.map(mb).join(", ")}]  GC pause ${median(gcPause).toFixed(1)} ms` +
-				(options.gcOff ? `  total alloc (GC off) median ${mb(median(alloc))} [${alloc.map(mb).join(", ")}]` : "") +
+			`${label.padEnd(12)} rows=${options.rows} shape=${options.shape} surface=${options.surface} runs=${options.runs}  GC-heap alloc median ${mb(median(gcAlloc))} [${gcAlloc.map(mb).join(", ")}]  GC pause ${median(gcPause).toFixed(1)} ms` +
+				(options.gcOff && label !== "baseline" ? `  total alloc (GC off) median ${mb(median(alloc))} [${alloc.map(mb).join(", ")}]` : "") +
 				`  heap after GC ${mb(median(heap))}  malloc after GC ${mb(median(malloc))}  active ${median(time).toFixed(0)} ms  frames ${last!.frames} factory ${last!.factoryCalls} notifies ${last!.notifies}`,
 		);
 	}
-	console.log(JSON.stringify({ rows: options.rows, shape: options.shape, runs: options.runs, summary }));
+	console.log(JSON.stringify({ rows: options.rows, shape: options.shape, surface: options.surface, runs: options.runs, summary }));
 }
 
 /** Trace records without timestamp and pid, the worker's temp directory replaced by `<root>`; factory records only counted. */
@@ -672,10 +713,10 @@ function normalizeTrace(file: string): { factory: number; other: string[] } {
 	return { factory, other };
 }
 
-function traceDiff(options: Options): void {
+async function traceDiff(options: Options): Promise<void> {
 	if (!options.baseline) throw new Error("--trace-diff needs --baseline <extension.ts>");
-	const current = spawnWorker(options, options.extension, "frames", "on");
-	const base = spawnWorker(options, options.baseline, "frames", "on");
+	const current = await spawnWorker(options, options.extension, "frames", "on");
+	const base = await spawnWorker(options, options.baseline, "frames", "on");
 	const a = normalizeTrace(base.traceFile);
 	const b = normalizeTrace(current.traceFile);
 	const otherSame = a.other.length === b.other.length && a.other.every((line, i) => line === b.other[i]);
@@ -705,27 +746,22 @@ async function main(): Promise<void> {
 		for (const extension of options.baseline ? [options.extension, options.baseline] : [options.extension]) {
 			const root = mkdtempSync(join(tmpdir(), "ott-repro-"));
 			const out = join(root, "result.json");
-			const child = Bun.spawnSync([process.execPath, SCRIPT, "--worker", "snapshot", "--rows", String(options.rows), "--extension", extension, "--out", out], {
-				env: { ...process.env, OTT_REPRO_ROOT: root, PI_CODING_AGENT_DIR: join(root, "agent") },
-				stdout: "inherit",
-				stderr: "inherit",
-			});
-			if (child.exitCode !== 0) throw new Error(`snapshot worker exited ${child.exitCode}`);
+			await runCapped([process.execPath, SCRIPT, "--worker", "snapshot", "--rows", String(options.rows), "--extension", extension, "--out", out], { ...process.env, OTT_REPRO_ROOT: root, PI_CODING_AGENT_DIR: join(root, "agent") }, false);
 			const { ownBytes, retainedBytes, controlBytes, rawBytes } = JSON.parse(readFileSync(out, "utf8")) as { ownBytes: number; retainedBytes: number; controlBytes: number; rawBytes: number };
 			console.log(
 				`${label(extension).padEnd(10)} rows=${options.rows} cell map own key/value bytes ${mb(ownBytes)}, retained ${mb(retainedBytes)} (${(retainedBytes / ownBytes).toFixed(2)}× own); control with copied lines retained ${mb(controlBytes)} (${(controlBytes / ownBytes).toFixed(2)}× own); raw text streamed ${mb(rawBytes)}`,
 			);
 		}
-		return;
-	}
-	if (options.traceDiff) return traceDiff(options);
-	if (options.frames) {
-		const output = spawnWorker(options, options.extension, "frames", "on");
+	} else if (options.traceDiff) {
+		await traceDiff(options);
+	} else if (options.frames) {
+		const output = await spawnWorker(options, options.extension, "frames", "on");
 		writeFileSync(options.frames, JSON.stringify({ rows: options.rows, shape: options.shape, frames: output.frames, notifies: output.notifies }));
 		console.log(`wrote ${output.frames?.length ?? 0} frames and ${output.notifies.length} notify payloads to ${options.frames}`);
-		return;
+	} else {
+		await measure(options);
 	}
-	measure(options);
+	console.log(`peak worker RSS ${mb(peakWorkerRss)} (cap ${mb(WORKER_MEMORY_CAP_BYTES)})`);
 }
 
 await main();

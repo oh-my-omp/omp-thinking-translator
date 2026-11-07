@@ -349,7 +349,7 @@ export default function thinkingTranslator(pi: ExtensionAPI) {
 			lastRenderCodes.length = frameCells.length;
 			if (changed) {
 				lastRenderNoConfig = false;
-				trace("render", { thinkingIndex: context.thinkingIndex, sources: lineCount, cells: frameCells.map((cell) => `${cell.progress.status}${cell.painted ? "*" : ""}`).join(","), width, native: nativeSeen });
+				trace("render", { thinkingIndex: context.thinkingIndex, sources: lineCount, cells: lastRenderCodes.map((code) => RENDER_CODE_TEXT[code]).join(","), width, native: nativeSeen });
 			}
 			if (frameCells.length === 0) return undefined;
 			let completed = 0;
@@ -956,7 +956,10 @@ function resolveTrackedBlockKey(blocks: ReadonlyMap<string, LiveBlock>, lines: I
 	return candidates?.at(-1);
 }
 
-/** 格在 render trace 签名里的取值；只用于判断签名变没变。 */
+/** 格在 render trace 里的取值，下标即 `renderCode`；常量串，记 trace 时不为每格新拼字符串。 */
+const RENDER_CODE_TEXT = ["pending", "pending*", "done", "done*", "error", "error*"] as const;
+
+/** 格在 render trace 签名里的取值，对应 `RENDER_CODE_TEXT` 的下标。 */
 function renderCode(cell: TranslationCell): number {
 	switch (cell.progress.status) {
 		case "pending":
