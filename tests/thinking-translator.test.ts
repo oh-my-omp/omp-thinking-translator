@@ -162,8 +162,8 @@ test("a reveal frame missing only the final period shares the full line's cell",
 	assert.equal(__testing.resolveTrackedLine(streaming, full.slice(0, -1)), full);
 	assert.equal(__testing.resolveTrackedLine(streaming, full), full);
 	assert.equal(
-		__testing.cellKey(__testing.DEFAULT_CONFIG, __testing.resolveTrackedLine(streaming, full.slice(0, -1))!),
-		__testing.cellKey(__testing.DEFAULT_CONFIG, __testing.resolveTrackedLine(streaming, full)!),
+		__testing.cellKeyPrefix(__testing.DEFAULT_CONFIG) + __testing.resolveTrackedLine(streaming, full.slice(0, -1))!,
+		__testing.cellKeyPrefix(__testing.DEFAULT_CONFIG) + __testing.resolveTrackedLine(streaming, full)!,
 	);
 });
 
@@ -238,21 +238,21 @@ test("every line the host still displays matches its raw thinking", () => {
 	}
 });
 
-test("cellKey separates model chain, order, effort, and target language", () => {
+test("the cell key prefix separates model chain, order, effort, and target language", () => {
 	const first = { provider: "ollama", id: "qwen2.5:7b" };
 	const second = { provider: "deepseek", id: "flash" };
 	const base = { ...__testing.DEFAULT_CONFIG, translatorModels: [first, second] };
 	const line = "Check the parser first.";
-	assert.notEqual(__testing.cellKey(base, line), __testing.cellKey({ ...base, targetLanguage: "Japanese" }, line));
-	assert.notEqual(__testing.cellKey(base, line), __testing.cellKey({ ...base, translatorModels: [first] }, line));
+	assert.notEqual(__testing.cellKeyPrefix(base) + line, __testing.cellKeyPrefix({ ...base, targetLanguage: "Japanese" }) + line);
+	assert.notEqual(__testing.cellKeyPrefix(base) + line, __testing.cellKeyPrefix({ ...base, translatorModels: [first] }) + line);
 	// 顺序决定先用谁，换顺序后同一行要重新翻译。
-	assert.notEqual(__testing.cellKey(base, line), __testing.cellKey({ ...base, translatorModels: [second, first] }, line));
+	assert.notEqual(__testing.cellKeyPrefix(base) + line, __testing.cellKeyPrefix({ ...base, translatorModels: [second, first] }) + line);
 	// 换推理强度后同一行要重新翻译，不能复用默认强度下的译文。
 	const withEffort = (effort: "off" | "low" | "high") => ({ ...base, translatorModels: [{ ...first, effort }, second] });
-	assert.notEqual(__testing.cellKey(base, line), __testing.cellKey(withEffort("low"), line));
-	assert.notEqual(__testing.cellKey(withEffort("low"), line), __testing.cellKey(withEffort("high"), line));
-	assert.notEqual(__testing.cellKey(withEffort("off"), line), __testing.cellKey(withEffort("low"), line));
-	assert.equal(__testing.cellKey(base, line), __testing.cellKey({ ...base, translatorModels: [{ ...first }, { ...second }] }, line));
+	assert.notEqual(__testing.cellKeyPrefix(base) + line, __testing.cellKeyPrefix(withEffort("low")) + line);
+	assert.notEqual(__testing.cellKeyPrefix(withEffort("low")) + line, __testing.cellKeyPrefix(withEffort("high")) + line);
+	assert.notEqual(__testing.cellKeyPrefix(withEffort("off")) + line, __testing.cellKeyPrefix(withEffort("low")) + line);
+	assert.equal(__testing.cellKeyPrefix(base) + line, __testing.cellKeyPrefix({ ...base, translatorModels: [{ ...first }, { ...second }] }) + line);
 });
 
 test("cleanTranslation removes common model wrappers", () => {
@@ -278,6 +278,23 @@ test("SOURCE_TEXT_BEGIN aborts the current model attempt so fallback can continu
 	assert.equal(controller.signal.aborted, true);
 });
 
+/** 协议标记可能被切在两段增量之间；只看窗口时也必须在第二段到达时中断。 */
+test("a SOURCE_TEXT_BEGIN split across two deltas still aborts the attempt", () => {
+	const controller = new AbortController();
+	const tail = __testing.scanForSourceTextBegin("", "Here the model echoes SOURCE_TE", controller);
+	assert.equal(controller.signal.aborted, false);
+	assert.throws(() => __testing.scanForSourceTextBegin(tail, "XT_BEGIN and the input", controller), /Translator returned SOURCE_TEXT_BEGIN/);
+	assert.equal(controller.signal.aborted, true);
+});
+
+test("the marker window carries only the characters a split marker can need", () => {
+	const controller = new AbortController();
+	let tail = "";
+	for (const delta of ["一段很长的译文，", "没有协议标记，", "只有 SOURCE_TEXT", "_END 这样的近似文字。"]) tail = __testing.scanForSourceTextBegin(tail, delta, controller);
+	assert.equal(controller.signal.aborted, false);
+	assert.equal(tail.length, "SOURCE_TEXT_BEGIN".length - 1);
+});
+
 test("line requests preserve order and duplicates while omitting non-Latin lines", () => {
 	assert.deepEqual(__testing.splitTranslationLines("\n first\r\n\n中文\n123\nsecond\nfirst\n"), ["first", "second", "first"]);
 });
@@ -290,6 +307,42 @@ test("splitTranslationLines returns empty for all-whitespace input", () => {
 test("splitTranslationLines trims outer indent but keeps internal spacing", () => {
 	assert.deepEqual(__testing.splitTranslationLines("  hello   world  "), ["hello   world"]);
 	assert.deepEqual(__testing.splitTranslationLines("  foo  bar  \n  baz   qux  "), ["foo  bar", "baz   qux"]);
+});
+
+test("translationLines yields exactly the lines splitTranslationLines returns", () => {
+	for (const text of ["\n first\r\n\n中文\n123\nsecond\nfirst\n", "", "   \n \t \n  ", "  foo  bar  \n  baz   qux  ", "a tail without newline", "line one\nline two\n"]) {
+		assert.deepEqual([...__testing.translationLines(text)], __testing.splitTranslationLines(text));
+	}
+});
+
+/** 工厂在每个揭示帧都要认块；认块必须在有结论时停下，不能为此把整块展示文本切完。 */
+test("block resolution reads display lines only until it has an answer", () => {
+	const blocks = new Map([["1:0", { raw: "Only here.\nNext line.\n", ended: true }]]);
+	function* lines(): Generator<string> {
+		yield "Only here.";
+		throw new Error("read past the deciding line");
+	}
+	assert.equal(__testing.resolveTrackedBlockKey(blocks, lines()), "1:0");
+});
+
+/** 块渲染器只记录在块的生命周期里不会再变的解析结果。 */
+test("a line counts as its block's own only when no earlier or open block can claim it", () => {
+	const blocks = new Map([
+		["1:0", { raw: "Shared line here.\nOlder only.\n", ended: true }],
+		["2:0", { raw: "Shared line here.\nNewer only.\nStill grow", ended: false }],
+	]);
+	assert.equal(__testing.ownsFirstMatch(blocks, "2:0", "Newer only."), true);
+	assert.equal(__testing.ownsFirstMatch(blocks, "1:0", "Older only."), true);
+	// 更早的块也含这一行：首个命中不是本块。
+	assert.equal(__testing.ownsFirstMatch(blocks, "2:0", "Shared line here."), false);
+	// 还在增长的末行不是完整行。
+	assert.equal(__testing.ownsFirstMatch(blocks, "2:0", "Still grow"), false);
+	// 前面的块还没收尾时它仍可能长出这一行，不算本块独有。
+	const open = new Map([
+		["1:0", { raw: "Older only.\n", ended: false }],
+		["2:0", { raw: "Newer only.\n", ended: false }],
+	]);
+	assert.equal(__testing.ownsFirstMatch(open, "2:0", "Newer only."), false);
 });
 
 test("buildLateRows omits translations whose boxes were already painted", () => {

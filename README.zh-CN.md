@@ -138,7 +138,7 @@ init 命令写入的是一个禁用状态的模板，不会替你选模型。你
 | `enabled` | boolean | `true` | 启用翻译处理。`translatorModels` 为空时跳过翻译并给出警告。 |
 | `targetLanguage` | string | `"Simplified Chinese"` | 传给翻译模型的目标语言，必须是非空字符串。 |
 | `translatorModels` | array | `[]` | 有序的翻译模型链；每一项为 `{ "provider": "...", "id": "...", "effort": "..." }`。每一项的 `provider` 和 `id` 都是必填的非空字符串；`effort` 可选（见下文）。每次请求都按这个顺序尝试（见[特性](#特性)）。某一项不是对象或缺少 `provider`/`id` 时，整个配置文件判为无效，而不是丢弃这一项，因为悄悄少一项会改变回退顺序。 |
-| `trace` | string \| boolean | `true` | 诊断记录。`true` 时每一步追加一条 JSONL 记录（`session_start`、`message_start`、`thinking_end`、`factory`、`dispatch`、`request`、每个失败后换下一个模型前的 `modelFailed`、`done`/`translateError`、每次格状态变化的 `render`、`painted`、`settled`、`lateFlush`、`reset`、`missingModel`），写到会话文件旁的 `<去掉 .jsonl 的会话文件名>.thinking-translator-trace.jsonl`；`--no-session` 进程不写任何内容。字符串表示显式路径；`false` 关闭。 |
+| `trace` | string \| boolean | `true` | 诊断记录。`true` 时每一步追加一条 JSONL 记录（`session_start`、`message_start`、`thinking_end`、`factory`（与上一条相比所解析的块、行数、追踪块数或 ctx/配置是否就绪有变化时）、`dispatch`、`request`、每个失败后换下一个模型前的 `modelFailed`、`done`/`translateError`、每次格状态变化的 `render`、`painted`、`settled`、`lateFlush`、`reset`、`missingModel`），写到会话文件旁的 `<去掉 .jsonl 的会话文件名>.thinking-translator-trace.jsonl`；`--no-session` 进程不写任何内容。字符串表示显式路径；`false` 关闭。 |
 
 旧配置格式遗留的 `contentTypes`、`minLatinChars` 和单模型的 `translatorModel` 键会被静默忽略：只翻译 thinking 块，是否翻译按行判断而不是按块长度阈值，翻译模型只来自 `translatorModels`。
 
@@ -163,10 +163,10 @@ init 命令写入的是一个禁用状态的模板，不会替你选模型。你
 
 机制：
 
-- 译文存放在一个模块级 `Map` 里，键是原始 thinking 行加上翻译模型链和目标语言（`extensions/thinking-translator.ts:132`，`cellKey` 在 `:658`），只有 `pi.registerAssistantThinkingRenderer` 返回的组件和流内 notify 回退会读取它（`extensions/thinking-translator.ts:169-330`、`:355-383`）。这些行流入 TUI 容器树，终止于终端写入；在宿主 18.1.19 上，没有任何消费者到达会话写入器、服务方请求构造器或压缩（`assistant-message.ts:841-860` → `pi-tui/src/tui.ts:486-513` → `tui.ts:2735-2781`），18.2.0 的 `#appendThinkingExtensions`（`assistant-message.ts:841-860`）仍然交给渲染器一个新的上下文对象，只挂载返回的组件。
+- 译文存放在一个模块级 `Map` 里，键是原始 thinking 行加上翻译模型链和目标语言（`extensions/thinking-translator.ts:144`，`cellKeyPrefix` 在 `:811`），只有 `pi.registerAssistantThinkingRenderer` 返回的组件和流内 notify 回退会读取它（`extensions/thinking-translator.ts:186-471`、`:496-523`）。这些行流入 TUI 容器树，终止于终端写入；在宿主 18.1.19 上，没有任何消费者到达会话写入器、服务方请求构造器或压缩（`assistant-message.ts:841-860` → `pi-tui/src/tui.ts:486-513` → `tui.ts:2735-2781`），18.2.0 的 `#appendThinkingExtensions`（`assistant-message.ts:841-860`）仍然交给渲染器一个新的上下文对象，只挂载返回的组件。
 - 交给渲染器的 `context.text` 是放在新分配对象里的已解析显示字符串（`assistant-message.ts:841-852`），不是指向已存储 `AgentMessage` 的引用，所以渲染器无法通过它修改消息。
 - 持久化把有类型的 `SessionEntry.message` 值写入会话 JSONL（`session-manager.ts:2288-2305`、`:817-818`）；下一次请求由这些条目重建（`session-context.ts:216-272`、`agent-loop.ts:1627-1673`）；压缩对同一分支的条目做划分（`compaction.ts:1328-1382`）。这三者都不读取渲染出来的行。
-- 在这个宿主里能改变模型可见数据的 hook 是 `context`、`before_provider_request`、`before_agent_start`、`session_before_compact` 和 `session_stop`。扩展一个都没有注册；它的处理器只有会话重置、按消息的状态跟踪、聊天内容 generation，以及 `message_start`/`message_update`/`message_end` 里的 thinking 块记账（`extensions/thinking-translator.ts:420-532`）。
+- 在这个宿主里能改变模型可见数据的 hook 是 `context`、`before_provider_request`、`before_agent_start`、`session_before_compact` 和 `session_stop`。扩展一个都没有注册；它的处理器只有会话重置、按消息的状态跟踪、聊天内容 generation，以及 `message_start`/`message_update`/`message_end` 里的 thinking 块记账（`extensions/thinking-translator.ts:561-674`）。
 
 下面最初的上下文边界检查在 omp 18.1.19 上运行：驱动真实 TUI，附加一个用完即弃的只读观察扩展，挂在 `before_provider_request`（发送前的最终 payload hook）和 `session_before_compact` 上，用渲染出的中文里的高熵片段加上框标签 `思考翻译` / `等待翻译` / `翻译失败` 作为金丝雀。针对 notify 的检查在 omp 18.1.21 上重做，见下文：
 
@@ -186,7 +186,7 @@ init 命令写入的是一个禁用状态的模板，不会替你选模型。你
 
 本边界不覆盖：
 
-- **翻译请求本身。** 每条符合条件的 thinking 行都作为一个独立请求发给配置的翻译模型（`extensions/thinking-translator.ts:440-647`），与 agent 对话分开；某个模型失败时，同一行会发给链里的下一个模型，所以 `translatorModels` 里的每个服务方都可能收到它。“不在 agent 上下文里”不等于“不发给任何模型”：这些服务方能看到你的 thinking 文本，并按它们自己的政策保留。
+- **翻译请求本身。** 每条符合条件的 thinking 行都作为一个独立请求发给配置的翻译模型（`extensions/thinking-translator.ts:577-800`），与 agent 对话分开；某个模型失败时，同一行会发给链里的下一个模型，所以 `translatorModels` 里的每个服务方都可能收到它。“不在 agent 上下文里”不等于“不发给任何模型”：这些服务方能看到你的 thinking 文本，并按它们自己的政策保留。
 - **由显示派生的产物。** 终端 scrollback、流内 notify 行、终端录屏，以及 omp 自己的 `/debug-transcript`（把渲染出的行转储到临时文件，`command-controller.ts:225-236`）按设计都包含译文行。这是可观测性界面，不是对话上下文。
 - **未测试的路径。** 压缩检查是在一个恢复的已持久化会话上运行的，所以恢复只在“检查过其规范消息、服务方 payload 和压缩输入”的意义上被覆盖——没有验证历史译文会重新渲染，也没有走遍所有恢复 UI 路径。会话导出/导入序列化器和分支切换完全没有测试。
 - **版本范围。** 金丝雀证据针对当时的扩展版本在 omp 18.1.19 上（notify 检查在 18.1.21 上重做）。这一保证依赖宿主的渲染器契约和上文引用的请求/压缩路径，而不是有文档的 API 承诺，所以宿主升级后要重新验证；开发依赖跟随最新发布版，这些历史金丝雀检查没有在每次发布上重做。

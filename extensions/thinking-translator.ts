@@ -29,13 +29,25 @@ type TranslationProgress =
 type TranslationCell = { progress: TranslationProgress; painted: boolean };
 /** 一个 thinking 块的原文与收尾状态；收尾后末行才定型，可以进入分发。 */
 type LiveBlock = { raw: string; ended: boolean };
-/** 一个 thinking 块当前可画的译文：已结束的格数、总格数和有正文的行。 */
-type TranslationView = { completed: number; total: number; rows: string[] };
+/**
+ * 一个 thinking 块当前可画的译文：已结束的格数、总格数和有正文的行。`rows` 是渲染器自己的数组，
+ * 内容只在 `rowsVersion` 变化时变，调用方据此决定要不要重新拼接正文。
+ */
+type TranslationView = { completed: number; total: number; rows: readonly string[]; rowsVersion: number };
 /** 一个追踪块的长期渲染器：宿主每次重建消息都换新上下文，组件身份保持不变。 */
 type BlockRenderer = {
 	readonly component: Component & NativeEventTarget;
-	update(context: AssistantThinkingRenderContext, sources: readonly string[], theme: Theme): void;
+	/** 当前展示文本里需要翻译判定的行数（含拉丁字母的非空行）。 */
+	readonly lineCount: number;
+	update(context: AssistantThinkingRenderContext, theme: Theme): void;
 };
+/** 当前配置连同由它算出的格键前缀：两者一起替换，前缀在这份配置的生命周期内不变。 */
+type ActiveConfig = { readonly config: ResolvedTranslatorConfig; readonly keyPrefix: string };
+/**
+ * 块渲染器对一条已完整展示行的解析结果（见 `createBlockRenderer`）。只存格键与拉丁门判定：格键在查表时
+ * 求过哈希，已是独立字符串；规范原文行由格键去掉前缀得到，不另持有指向块原文的子串。
+ */
+type LineRecord = { key: string; readonly translatable: boolean };
 type ResolvedTranslatorConfig = {
 	enabled: boolean;
 	targetLanguage: string;
@@ -131,7 +143,7 @@ export default function thinkingTranslator(pi: ExtensionAPI) {
 	// 拿 thinking 事件里的原始文本当键，总有展示行查不到自己的译文格。
 	const translations = new Map<string, TranslationCell>();
 	// 只替换、不清空：清空会让历史块的 render 查不到键而整框消失，而键里就含模型与目标语言。
-	let activeConfig: ResolvedTranslatorConfig | undefined;
+	let active: ActiveConfig | undefined;
 	// 渲染器工厂拿不到 ExtensionContext，模型注册表与通知只能借最近一次事件的上下文。
 	let latestContext: ExtensionContext | undefined;
 	let requestRender: (() => void) | undefined;
@@ -162,88 +174,205 @@ export default function thinkingTranslator(pi: ExtensionAPI) {
 	 */
 	let nativeSeen = false;
 	/**
+	 * 上一条已写出的工厂记录的签名（不含 `textLen`）。揭示中每个 delta 都会调用工厂，签名不变时不再落盘；
+	 * 只与上一条比，不记全集。
+	 */
+	const lastFactoryTrace = { thinkingIndex: -1, contentIndex: -1, sources: -1, liveBlocks: -1, hasCtx: false, hasConfig: false };
+	/**
 	 * `showStatus` 按上一次 notify 创建的 spacer+Text 做身份合并：两次通知之间若没有宿主消息事件，
 	 * 后一次会覆盖上一行，所以必须连同上一份完整 payload 一起重发；message_start、message_update、
 	 * message_end 每次都递增 generation，表示 chat 子节点已挂载或变更，之后必须从新 payload 开始。
 	 */
 	pi.registerAssistantThinkingRenderer((context, theme) => {
-		// 展示文本每次变化都会调用工厂，工厂期的拆分就是当前可见行。
-		const sources = splitTranslationLines(context.text);
 		requestRender = context.requestRender;
-		trace("factory", { thinkingIndex: context.thinkingIndex, contentIndex: context.contentIndex, textLen: context.text.length, sources: sources.length, liveBlocks: liveBlocks.size, hasCtx: latestContext !== undefined, hasConfig: activeConfig !== undefined });
-		if (sources.length === 0) return undefined;
+		// 按内容认块只读到第一条能分开各块的展示行；认出的块由它自己的渲染器只切展示文本的新增尾部。
+		const blockKey = resolveTrackedBlockKey(liveBlocks, translationLines(context.text));
+		let renderer: BlockRenderer | undefined;
+		if (blockKey !== undefined) {
+			renderer = blockRenderers.get(blockKey);
+			if (renderer) renderer.update(context, theme);
+			else {
+				renderer = createBlockRenderer(context, theme, blockKey);
+				blockRenderers.set(blockKey, renderer);
+			}
+			traceFactory(context, renderer.lineCount);
+			return renderer.component;
+		}
 		// 认不出所属块时（历史回放，或块的第一行还没揭示完整）没有可复用的身份：没有译文可画就不挂组件，
 		// 否则每次重建都会挂一个新的空组件；只有已译过的行（例如移出追踪上限的旧块）才为这次渲染单独建组件。
-		const blockKey = resolveTrackedBlockKey(liveBlocks, sources);
-		if (blockKey === undefined) {
-			const config = activeConfig;
-			if (!config || !sources.some((source) => translations.has(cellKey(config, source)))) return undefined;
-			return createBlockRenderer(context, sources, theme).component;
-		}
-		const existing = blockRenderers.get(blockKey);
-		if (existing) {
-			existing.update(context, sources, theme);
-			return existing.component;
-		}
-		const created = createBlockRenderer(context, sources, theme);
-		blockRenderers.set(blockKey, created);
-		return created.component;
+		const sources = splitTranslationLines(context.text);
+		traceFactory(context, sources.length);
+		const current = active;
+		if (sources.length === 0 || !current || !sources.some((source) => translations.has(current.keyPrefix + source))) return undefined;
+		return createBlockRenderer(context, theme, undefined).component;
 	});
 
-	function createBlockRenderer(initialContext: AssistantThinkingRenderContext, initialSources: readonly string[], initialTheme: Theme): BlockRenderer {
+	function traceFactory(context: AssistantThinkingRenderContext, sources: number): void {
+		const last = lastFactoryTrace;
+		const hasCtx = latestContext !== undefined;
+		const hasConfig = active !== undefined;
+		if (
+			last.thinkingIndex === context.thinkingIndex &&
+			last.contentIndex === context.contentIndex &&
+			last.sources === sources &&
+			last.liveBlocks === liveBlocks.size &&
+			last.hasCtx === hasCtx &&
+			last.hasConfig === hasConfig
+		)
+			return;
+		last.thinkingIndex = context.thinkingIndex;
+		last.contentIndex = context.contentIndex;
+		last.sources = sources;
+		last.liveBlocks = liveBlocks.size;
+		last.hasCtx = hasCtx;
+		last.hasConfig = hasConfig;
+		trace("factory", { thinkingIndex: context.thinkingIndex, contentIndex: context.contentIndex, textLen: context.text.length, sources, liveBlocks: liveBlocks.size, hasCtx, hasConfig });
+	}
+
+	/**
+	 * `ownKey` 是追踪块的键；认不出所属块时为 undefined，这样的渲染器只为一次渲染而建，不接受 update。
+	 *
+	 * 追踪块的渲染器持有两样随块同生同灭的增量状态（oh-my-omp/omp-thinking-translator#11 决策 §6）：
+	 * - 切分进度：展示文本已切到的最后一个换行之后的 offset，和由此得到的各行在文本里的起止位置。
+	 *   只存位置不存子串，行文本用到时才从当前文本切出，旧版本的展示文本不会被行引用留住。
+	 *   下一次展示文本仍以同一前缀开头时只切新增尾部；宿主改写了前缀就整份重切，并丢掉全部解析记录。
+	 * - 已完整展示行的解析记录：只在这一行在追踪块里的首个命中就是本块、且排在本块之前的块都已收尾时记录，
+	 *   那样结果在块的生命周期里不会再变。块被逐出后渲染器即使仍被宿主重绘，也丢掉记录、逐帧现算。
+	 */
+	function createBlockRenderer(initialContext: AssistantThinkingRenderContext, initialTheme: Theme, ownKey: string | undefined): BlockRenderer {
 		let context = initialContext;
-		let sources = initialSources;
 		let theme = initialTheme;
-		// 每帧都来；只在格状态签名变化时记一条，否则 trace 文件会被重绘刷爆。
-		let lastRenderSig = "";
+		/** 切分所依据的展示文本，与 `bounds` 对应。 */
+		let text = "";
+		/** `text` 里最后一个换行之后的 offset；此前的行已完整。 */
+		let scanned = 0;
+		/** 每行两项：去掉首尾空白后的起止位置。 */
+		const bounds: number[] = [];
+		let lineCount = 0;
+		let completeLines = 0;
+		const records: (LineRecord | undefined)[] = [];
+		/** `records` 里格键所用的前缀；配置换了前缀就按新前缀重算一次。 */
+		let recordsPrefix: string | undefined;
+		/** 本帧各行的格键；下标与行号一致，逐帧覆盖。 */
+		const frameKeys: string[] = [];
+		const frameCells: TranslationCell[] = [];
+		const frameRows: string[] = [];
+		/** 最近一次有正文时的行；只在内容变化时改写并递增 `rowsVersion`。 */
+		const shownRows: string[] = [];
+		let rowsVersion = 0;
+		const lineAt = (index: number): string => text.slice(bounds[index * 2], bounds[index * 2 + 1]);
+		const split = (next: string): void => {
+			if (next === text) return;
+			if (!next.startsWith(text.slice(0, scanned))) {
+				scanned = 0;
+				completeLines = 0;
+				records.length = 0;
+			}
+			text = next;
+			bounds.length = completeLines * 2;
+			scanned = appendTranslationLineBounds(text, scanned, bounds);
+			completeLines = bounds.length / 2;
+			appendTranslationLineBound(text, scanned, text.length, bounds);
+			lineCount = bounds.length / 2;
+		};
+		split(initialContext.text);
+		// 每帧都来；只在格状态变化时记一条，否则 trace 文件会被重绘刷爆。
+		let lastRenderNoConfig = false;
+		const lastRenderCodes: number[] = [];
 		const box = new Box(1, 1, (text) => theme.bg("customMessageBg", text));
 		const title = new Text("", 0, 0);
 		const body = new Markdown("", 0, 0, getMarkdownTheme());
 		box.addChild(title);
 		box.addChild(body);
+		let bodyVersion = -1;
 		const heading = (view: TranslationView): string =>
 			tr(
 				`Thinking translation · Block ${context.thinkingIndex + 1} · ${view.completed}/${view.total}`,
 				`思考翻译 · 块 ${context.thinkingIndex + 1} · ${view.completed}/${view.total}`,
 			);
+		/**
+		 * 本帧逐行定格键并收集待分发的行。已记录的行直接取记录；其余的行（末行、认不出的行、首个命中不是本块的行）
+		 * 现算：展示行映射回原文里的整行，揭示中的变体（缺句号、省略号收尾）与最终展示共用同一格，
+		 * 对不上追踪块的历史行按展示文本查。
+		 */
+		const resolveFrame = (current: ActiveConfig, dispatching: boolean): string[] | undefined => {
+			const own = ownKey !== undefined && liveBlocks.has(ownKey) ? ownKey : undefined;
+			if (own === undefined) records.length = 0;
+			else if (recordsPrefix !== current.keyPrefix) {
+				const previous = recordsPrefix;
+				if (previous !== undefined) for (const record of records) if (record) record.key = current.keyPrefix + record.key.slice(previous.length);
+				recordsPrefix = current.keyPrefix;
+			}
+			let missing: string[] | undefined;
+			frameKeys.length = lineCount;
+			for (let index = 0; index < lineCount; index++) {
+				const record = records[index];
+				if (record) {
+					frameKeys[index] = record.key;
+					if (dispatching && record.translatable && !translations.has(record.key)) (missing ??= []).push(record.key.slice(current.keyPrefix.length));
+					continue;
+				}
+				const line = lineAt(index);
+				const canonical = resolveTrackedLine(liveBlocks.values(), line);
+				const translatable = shouldTranslateLine(line);
+				const key = current.keyPrefix + (canonical ?? line);
+				frameKeys[index] = key;
+				if (dispatching && translatable && canonical !== undefined && !translations.has(key)) (missing ??= []).push(canonical);
+				// 记录只存格键：本帧取格时会对它求哈希，拼接出的键随即成为独立字符串，不留住块原文。
+				if (own !== undefined && index < completeLines && canonical !== undefined && ownsFirstMatch(liveBlocks, own, line)) records[index] = { key, translatable };
+			}
+			return missing;
+		};
 		/** ANSI 行与原生描述共用：分发、取格、标记 painted；没有可画的正文时返回 undefined。 */
 		const collect = (width: number | undefined): TranslationView | undefined => {
-			// 译文晚到时按组件当前的上下文重绘：宿主重建消息后，旧上下文的回调可能已不再对应这块。
-			dispatch(sources, () => context.requestRender(), context.thinkingIndex);
-			const config = activeConfig;
-			if (!config) {
-				if (lastRenderSig !== "no-config") trace("render", { thinkingIndex: context.thinkingIndex, reason: "no-config" });
-				lastRenderSig = "no-config";
+			const ctx = lineCount > 0 ? prepareDispatch() : undefined;
+			const current = active;
+			if (!current) {
+				if (!lastRenderNoConfig) trace("render", { thinkingIndex: context.thinkingIndex, reason: "no-config" });
+				lastRenderNoConfig = true;
 				return undefined;
 			}
-			const cells: TranslationCell[] = [];
-			for (const source of sources) {
-				// 揭示中的展示变体（缺句号、省略号收尾）都指向同一格；对不上追踪块的历史行按展示文本查。
-				const cell = translations.get(cellKey(config, resolveTrackedLine(liveBlocks.values(), source) ?? source));
-				if (cell) cells.push(cell);
+			const missing = resolveFrame(current, ctx !== undefined);
+			// 译文晚到时按组件当前的上下文重绘：宿主重建消息后，旧上下文的回调可能已不再对应这块。
+			if (ctx && missing) dispatch(ctx, current, missing, lineCount, () => context.requestRender(), context.thinkingIndex);
+			frameCells.length = 0;
+			for (let index = 0; index < lineCount; index++) {
+				const cell = translations.get(frameKeys[index]!);
+				if (cell) frameCells.push(cell);
 			}
-			const sig = cells.map((cell) => `${cell.progress.status}${cell.painted ? "*" : ""}`).join(",");
-			if (sig !== lastRenderSig) {
-				lastRenderSig = sig;
-				trace("render", { thinkingIndex: context.thinkingIndex, sources: sources.length, cells: sig, width, native: nativeSeen });
+			let changed = lastRenderNoConfig || lastRenderCodes.length !== frameCells.length;
+			for (let index = 0; index < frameCells.length; index++) {
+				const code = renderCode(frameCells[index]!);
+				if (lastRenderCodes[index] !== code) changed = true;
+				lastRenderCodes[index] = code;
 			}
-			if (cells.length === 0) return undefined;
+			lastRenderCodes.length = frameCells.length;
+			if (changed) {
+				lastRenderNoConfig = false;
+				trace("render", { thinkingIndex: context.thinkingIndex, sources: lineCount, cells: frameCells.map((cell) => `${cell.progress.status}${cell.painted ? "*" : ""}`).join(","), width, native: nativeSeen });
+			}
+			if (frameCells.length === 0) return undefined;
 			let completed = 0;
-			const rows: string[] = [];
-			for (const cell of cells) {
+			frameRows.length = 0;
+			for (const cell of frameCells) {
 				if (cell.progress.status === "pending") continue;
 				completed++;
-				const text = cellBody(cell.progress);
-				rows.push(text);
+				const row = cellBody(cell.progress);
+				frameRows.push(row);
 				// 画出去的译文框里就看得见；真正需要兜底的是一个字都没画上的格。
 				if (cell.progress.status === "done" && !cell.painted) {
 					cell.painted = true;
-					trace("painted", { thinkingIndex: context.thinkingIndex, text: text.slice(0, 40), native: nativeSeen });
+					trace("painted", { thinkingIndex: context.thinkingIndex, text: row.slice(0, 40), native: nativeSeen });
 				}
 			}
 			// 还没有任何译文时不占版面：等待中的行只计入标题的计数。
-			if (rows.length === 0) return undefined;
-			return { completed, total: cells.length, rows };
+			if (frameRows.length === 0) return undefined;
+			if (frameRows.length !== shownRows.length || frameRows.some((row, index) => row !== shownRows[index])) {
+				for (let index = 0; index < frameRows.length; index++) shownRows[index] = frameRows[index]!;
+				shownRows.length = frameRows.length;
+				rowsVersion++;
+			}
+			return { completed, total: frameCells.length, rows: shownRows, rowsVersion };
 		};
 
 		// 原生描述：section 根节点只在翻译中/已完成或折叠状态变化时换新对象；标题文字和正文各是独立组件。
@@ -264,15 +393,20 @@ export default function thinkingTranslator(pi: ExtensionAPI) {
 			},
 		};
 		let contentText = "";
+		let contentVersion = -1;
 		let contentNode: NativeNode | undefined;
 		const content: Component = {
 			render: () => [],
 			describe(): NativeNode | null {
 				if (!view) return null;
-				const text = view.rows.join("\n\n");
-				if (!contentNode || text !== contentText) {
-					contentText = text;
-					contentNode = node("md", { text });
+				// 行没变就不重新拼接正文。
+				if (!contentNode || view.rowsVersion !== contentVersion) {
+					contentVersion = view.rowsVersion;
+					const text = view.rows.join("\n\n");
+					if (!contentNode || text !== contentText) {
+						contentText = text;
+						contentNode = node("md", { text });
+					}
 				}
 				return contentNode;
 			},
@@ -291,7 +425,11 @@ export default function thinkingTranslator(pi: ExtensionAPI) {
 				const current = collect(width);
 				if (!current) return [];
 				title.setText(theme.fg("accent", heading(current)));
-				body.setText(current.rows.join("\n\n"));
+				// 行没变就不重新拼接正文、不重设 Markdown：正文只在有译文落地时才换。
+				if (current.rowsVersion !== bodyVersion) {
+					bodyVersion = current.rowsVersion;
+					body.setText(current.rows.join("\n\n"));
+				}
 				return box.render(width);
 			},
 			// Tern Surface Protocol：与宿主 thinking 同构的 section（role omp.thinking*），ANSI 终端不会走到这里。
@@ -321,10 +459,13 @@ export default function thinkingTranslator(pi: ExtensionAPI) {
 		};
 		return {
 			component,
-			update(nextContext, nextSources, nextTheme): void {
+			get lineCount() {
+				return lineCount;
+			},
+			update(nextContext, nextTheme): void {
 				context = nextContext;
-				sources = nextSources;
 				theme = nextTheme;
+				split(nextContext.text);
 			},
 		};
 	}
@@ -410,7 +551,7 @@ export default function thinkingTranslator(pi: ExtensionAPI) {
 		clearLateNotifications();
 		liveBlocks.clear();
 		blockRenderers.clear();
-		activeConfig = undefined;
+		active = undefined;
 		latestContext = undefined;
 		configErrorNotified.clear();
 		requestRender = undefined;
@@ -430,18 +571,14 @@ export default function thinkingTranslator(pi: ExtensionAPI) {
 	pi.on("session_shutdown", () => resetTranslations("session_shutdown"));
 
 	/**
-	 * 分发点在渲染期：只有这里知道宿主最终展示了哪些行。
-	 * 一行要译的前提是它是某个"本进程观察到的 thinking 块"里的完整行：
-	 * 生成中的末行只是揭示到一半的前缀，每次重绘都是新键，等这一块收尾才算数；
-	 * 历史回放的块没有原文记录，因此整片 scrollback 不会被重译。
-	 * 重绘回调取自发起分发的那个组件，而不是模块里"最后一次"的那个：后者会被下一块的工厂覆盖，
-	 * 译文回来时催的就不是自己那一块。
+	 * 分发的前置条件：有事件上下文、配置已加载且启用、模型链非空（为空只提示一次）。配置在这里按需加载，
+	 * 之后取格也用同一份。返回可用于分发的上下文；不分发时返回 undefined。
 	 */
-	function dispatch(sources: readonly string[], notify: () => void, thinkingIndex: number): void {
+	function prepareDispatch(): ExtensionContext | undefined {
 		const ctx = latestContext;
-		if (!ctx || sources.length === 0) return;
-		const config = (activeConfig ??= loadConfig(ctx));
-		if (!config.enabled) return;
+		if (!ctx) return undefined;
+		const { config } = (active ??= activate(loadConfig(ctx)));
+		if (!config.enabled) return undefined;
 		if (config.translatorModels.length === 0) {
 			notifyMissingModel(
 				ctx,
@@ -451,26 +588,30 @@ export default function thinkingTranslator(pi: ExtensionAPI) {
 					"thinking-translator 已启用，但 translatorModels 为空；已跳过翻译",
 				),
 			);
-			return;
+			return undefined;
 		}
-		// 展示行先映射回原文里的整行：揭示中的变体（缺句号、省略号收尾）与最终展示共用同一格。
-		const missing: string[] = [];
-		for (const line of sources) {
-			if (!shouldTranslateLine(line)) continue;
-			const canonical = resolveTrackedLine(liveBlocks.values(), line);
-			if (canonical !== undefined && !translations.has(cellKey(config, canonical))) missing.push(canonical);
-		}
-		if (missing.length === 0) return;
-		trace("dispatch", { thinkingIndex, sources: sources.length, missing: missing.length });
+		return ctx;
+	}
+
+	/**
+	 * 分发点在渲染期：只有这里知道宿主最终展示了哪些行。
+	 * 一行要译的前提是它是某个"本进程观察到的 thinking 块"里的完整行：
+	 * 生成中的末行只是揭示到一半的前缀，每次重绘都是新键，等这一块收尾才算数；
+	 * 历史回放的块没有原文记录，因此整片 scrollback 不会被重译。`missing` 是已映射回原文整行、还没有格的行。
+	 * 重绘回调取自发起分发的那个组件，而不是模块里"最后一次"的那个：后者会被下一块的工厂覆盖，
+	 * 译文回来时催的就不是自己那一块。
+	 */
+	function dispatch(ctx: ExtensionContext, current: ActiveConfig, missing: readonly string[], sources: number, notify: () => void, thinkingIndex: number): void {
+		trace("dispatch", { thinkingIndex, sources, missing: missing.length });
 		const signal = controller.signal;
 		// 先占格：模型解析可能要等一次网络发现，期间的重绘不能再为同一行发起分发。
 		for (const line of missing) {
-			const key = cellKey(config, line);
+			const key = current.keyPrefix + line;
 			// 同一次分发里的重复行共用一格。
 			if (translations.has(key)) continue;
 			const cell: TranslationCell = { progress: { status: "pending" }, painted: false };
 			translations.set(key, cell);
-			void translateLine(cell, line, ctx, config, signal, notify).then(() => noteTranslationSettled(cell, thinkingIndex, signal));
+			void translateLine(cell, line, ctx, current.config, signal, notify).then(() => noteTranslationSettled(cell, thinkingIndex, signal));
 		}
 	}
 
@@ -490,10 +631,10 @@ export default function thinkingTranslator(pi: ExtensionAPI) {
 		latestContext = ctx;
 		noteChatContentMounted();
 		// thinking 增量事件太密，配置每条消息只读一次盘；这里直接换成新值，render 永远有键可用。
-		activeConfig = loadConfig(ctx);
-		traceFile = resolveTraceFile(activeConfig, ctx.sessionManager.getSessionFile());
+		active = activate(loadConfig(ctx));
+		traceFile = resolveTraceFile(active.config, ctx.sessionManager.getSessionFile());
 		messageSeq++;
-		trace("message_start", { messageSeq, hasNotify: typeof ctx.ui?.notify === "function", cwd: ctx.cwd, enabled: activeConfig.enabled, models: activeConfig.translatorModels.map(modelLabel) });
+		trace("message_start", { messageSeq, hasNotify: typeof ctx.ui?.notify === "function", cwd: ctx.cwd, enabled: active.config.enabled, models: active.config.translatorModels.map(modelLabel) });
 		// 上一条消息的块原文要留着：它的组件还在被重绘，逐行匹配得拿自己那份原文。
 		for (const key of liveBlocks.keys()) {
 			if (liveBlocks.size <= MAX_TRACKED_BLOCKS) break;
@@ -630,20 +771,32 @@ async function streamTranslation(
 		{ messages: [{ role: "user", content: [{ type: "text", text: prompt }], timestamp: Date.now() }] },
 		{ apiKey: auth.apiKey, headers: auth.headers, maxTokens: Math.min(8192, Math.max(1024, Math.ceil(source.length * 1.3))), signal: requestSignal, ...reasoningOptions(effort) },
 	);
-	let translation = "";
+	// 收集各段增量，结束时拼一次；协议标记只在上一段末尾与本段增量组成的窗口里找，不反复扫描整份译文。
+	const parts: string[] = [];
+	let tail = "";
 	for await (const event of eventStream) {
 		if (signal.aborted) return undefined;
 		if (event.type === "error") throw new Error(event.error.errorMessage || tr(`Translation ${event.reason}`, `翻译${event.reason}`));
 		if (event.type === "text_delta") {
-			translation += event.delta;
-			abortOnSourceTextBegin(translation, attemptController);
+			parts.push(event.delta);
+			tail = scanForSourceTextBegin(tail, event.delta, attemptController);
 		}
 	}
 	if (signal.aborted) return undefined;
 	// 空响应按失败处理：重试一次往往就有内容，直接落空格只会留下一行空白。
-	const cleaned = cleanTranslation(translation);
+	const cleaned = cleanTranslation(parts.join(""));
 	if (!cleaned) throw new Error(tr("Translator returned empty text", "翻译器返回了空文本"));
 	return cleaned;
+}
+
+/**
+ * 协议标记可能跨两段增量：检查上一段留下的末尾（标记长度减一个字符）接上本段增量，返回下一次要接的末尾。
+ * 累积译文里第一次出现标记的那一段增量，标记必然整个落在这个窗口里。
+ */
+function scanForSourceTextBegin(tail: string, delta: string, controller: AbortController): string {
+	const window = tail + delta;
+	abortOnSourceTextBegin(window, controller);
+	return window.slice(-(SOURCE_TEXT_BEGIN_MARKER.length - 1));
 }
 
 /** 模型回显输入协议时立即中断本次请求；抛错复用既有模型链 fallback。 */
@@ -654,10 +807,15 @@ function abortOnSourceTextBegin(text: string, controller: AbortController): void
 	throw error;
 }
 
-/** 键里带上整条模型链（含各自的推理强度）与目标语言，改配置后不会复用上一轮的译文。 */
-function cellKey(config: ResolvedTranslatorConfig, line: string): string {
+/** 格键 = 前缀 + 原文行。前缀带上整条模型链（含各自的推理强度）与目标语言，改配置后不会复用上一轮的译文。 */
+function cellKeyPrefix(config: ResolvedTranslatorConfig): string {
 	const chain = config.translatorModels.map((model) => `${modelLabel(model)}@${model.effort ?? "default"}`).join(">") || "-";
-	return `${chain}\u0000${config.targetLanguage}\u0000${line}`;
+	return `${chain}\u0000${config.targetLanguage}\u0000`;
+}
+
+/** 换上一份配置：格键前缀随它算一次，配置被替换前不变。 */
+function activate(config: ResolvedTranslatorConfig): ActiveConfig {
+	return { config, keyPrefix: cellKeyPrefix(config) };
 }
 
 function modelLabel(model: ModelRef): string {
@@ -675,10 +833,57 @@ function reasoningOptions(effort: EffortSetting | undefined): Pick<SimpleStreamO
 	return { reasoning: effort as Effort };
 }
 
-/** 按换行符分行，只保留含拉丁字母的非空行；重复行由调用方按缓存合并。 */
+const LATIN_LETTER = /[A-Za-z]/;
+
+/** 按换行符分行，只保留含拉丁字母的非空行（去掉首尾空白）；重复行由调用方按缓存合并。 */
 function splitTranslationLines(text: string): string[] {
-	return text.split("\n").map((line) => line.trim()).filter((line) => /[A-Za-z]/.test(line));
+	const bounds: number[] = [];
+	appendTranslationLineBound(text, appendTranslationLineBounds(text, 0, bounds), text.length, bounds);
+	const lines: string[] = [];
+	for (let index = 0; index < bounds.length; index += 2) lines.push(text.slice(bounds[index], bounds[index + 1]));
+	return lines;
 }
+
+/** 与 `splitTranslationLines` 相同的行，按需逐行产出：认块通常读到第一行就有结论，不必切完整块。 */
+function* translationLines(text: string): Generator<string, void, undefined> {
+	const bounds: number[] = [];
+	for (let start = 0; ; ) {
+		const newline = text.indexOf("\n", start);
+		appendTranslationLineBound(text, start, newline < 0 ? text.length : newline, bounds);
+		if (bounds.length > 0) {
+			yield text.slice(bounds[0], bounds[1]);
+			bounds.length = 0;
+		}
+		if (newline < 0) return;
+		start = newline + 1;
+	}
+}
+
+/** 从 `from` 起把每个后面跟着换行的行的起止位置追加到 `bounds`，返回最后一个换行之后的 offset。 */
+function appendTranslationLineBounds(text: string, from: number, bounds: number[]): number {
+	let start = from;
+	for (let newline = text.indexOf("\n", start); newline >= 0; newline = text.indexOf("\n", start)) {
+		appendTranslationLineBound(text, start, newline, bounds);
+		start = newline + 1;
+	}
+	return start;
+}
+
+/** `text` 的 [start, end) 一段去掉首尾空白后若含拉丁字母，就把去空白后的起止位置追加到 `bounds`。 */
+function appendTranslationLineBound(text: string, start: number, end: number, bounds: number[]): void {
+	const segment = text.slice(start, end);
+	const line = segment.trim();
+	if (!LATIN_LETTER.test(line)) return;
+	const lineStart = start + segment.length - segment.trimStart().length;
+	bounds.push(lineStart, lineStart + line.length);
+}
+
+/**
+ * 匹配点之后：行尾允许残留被改写吃掉的句末标点和行内空白，但后面必须就是换行（块已收尾时也可以是块尾）。
+ * sticky：从匹配点原地检查原文，不切出剩余整段。
+ */
+const LINE_END_IN_GROWING_BLOCK = /[.。…]*[^\S\n]*\n/y;
+const LINE_END_IN_ENDED_BLOCK = /[.。…]*[^\S\n]*(?:\n|$)/y;
 
 /**
  * 展示行必须是这一块原始 thinking 里的一整行；命中时返回原文里那一整行（去掉首尾空白），作为译文格的键与翻译原文。
@@ -692,19 +897,18 @@ function splitTranslationLines(text: string): string[] {
 function matchBlockLine(raw: string, line: string, blockEnded = true): string | undefined {
 	const normalized = line.replace(/(?:\.{3}|…)$/, "").trimEnd();
 	if (!normalized) return undefined;
-	// 行尾允许残留被改写吃掉的句末标点和行内空白，但后面必须就是换行（块已收尾时也可以是块尾）。
-	const boundary = blockEnded ? /^[.。…]*[^\S\n]*(?:\n|$)/ : /^[.。…]*[^\S\n]*\n/;
-	for (let from = 0; ; from = from + 1) {
+	const boundary = blockEnded ? LINE_END_IN_ENDED_BLOCK : LINE_END_IN_GROWING_BLOCK;
+	for (let from = 0; ; ) {
 		const index = raw.indexOf(normalized, from);
 		if (index < 0) return undefined;
-		const rest = raw.slice(index + normalized.length);
-		if (boundary.test(rest)) {
+		const end = index + normalized.length;
+		boundary.lastIndex = end;
+		if (boundary.test(raw)) {
 			const lineStart = raw.lastIndexOf("\n", index) + 1;
-			const newline = rest.indexOf("\n");
-			const lineEnd = index + normalized.length + (newline < 0 ? rest.length : newline);
-			return raw.slice(lineStart, lineEnd).trim();
+			const newline = raw.indexOf("\n", end);
+			return raw.slice(lineStart, newline < 0 ? raw.length : newline).trim();
 		}
-		from = index;
+		from = index + 1;
 	}
 }
 
@@ -721,18 +925,47 @@ function resolveTrackedLine(blocks: Iterable<LiveBlock>, line: string): string |
 }
 
 /**
+ * 这一行在追踪块里的首个命中是否就是 `ownKey` 那一块，且排在它之前的块都已收尾。成立时这一行的规范形式
+ * 在该块的生命周期里不会再变：块原文只追加，收尾的块不再变化，新块排在后面不影响首个命中。
+ */
+function ownsFirstMatch(blocks: ReadonlyMap<string, LiveBlock>, ownKey: string, line: string): boolean {
+	for (const [key, block] of blocks) {
+		if (key === ownKey) return matchBlockLine(block.raw, line, block.ended) !== undefined;
+		if (!block.ended || matchBlockLine(block.raw, line, block.ended) !== undefined) return false;
+	}
+	return false;
+}
+
+/**
  * 展示行属于哪个追踪块：按内容认块，取第一条能认回原文的展示行；多个块都含这一行时用后面的行继续区分，
  * 到最后仍分不开就取最新的块。没有一行认得出（历史回放，或块的第一行还没揭示完整）时返回 undefined。
+ * 行按需读取，有结论就停。
  */
-function resolveTrackedBlockKey(blocks: ReadonlyMap<string, LiveBlock>, lines: readonly string[]): string | undefined {
-	let candidates: [string, LiveBlock][] | undefined;
+function resolveTrackedBlockKey(blocks: ReadonlyMap<string, LiveBlock>, lines: Iterable<string>): string | undefined {
+	let candidates: string[] | undefined;
 	for (const line of lines) {
-		const matched = (candidates ?? [...blocks]).filter(([, block]) => matchBlockLine(block.raw, line, block.ended) !== undefined);
-		if (matched.length === 0) continue;
-		if (matched.length === 1) return matched[0]![0];
+		let matched: string[] | undefined;
+		for (const key of candidates ?? blocks.keys()) {
+			const block = blocks.get(key)!;
+			if (matchBlockLine(block.raw, line, block.ended) !== undefined) (matched ??= []).push(key);
+		}
+		if (matched === undefined) continue;
+		if (matched.length === 1) return matched[0];
 		candidates = matched;
 	}
-	return candidates?.at(-1)?.[0];
+	return candidates?.at(-1);
+}
+
+/** 格在 render trace 签名里的取值；只用于判断签名变没变。 */
+function renderCode(cell: TranslationCell): number {
+	switch (cell.progress.status) {
+		case "pending":
+			return cell.painted ? 1 : 0;
+		case "done":
+			return cell.painted ? 3 : 2;
+		case "error":
+			return cell.painted ? 5 : 4;
+	}
 }
 
 /** 块标识：消息序号 + 内容块下标。 */
@@ -1048,9 +1281,10 @@ export const __testing = {
 	abortOnSourceTextBegin,
 	buildLateRows,
 	DEFAULT_CONFIG,
-	cellKey,
+	cellKeyPrefix,
 	cleanTranslation,
 	matchBlockLine,
+	ownsFirstMatch,
 	resolveTrackedLine,
 	resolveTrackedBlockKey,
 	getProjectConfigPath,
@@ -1058,6 +1292,8 @@ export const __testing = {
 	mergeConfig,
 	normalizeTranslatorModels,
 	reasoningOptions,
+	scanForSourceTextBegin,
 	shouldTranslateLine,
 	splitTranslationLines,
+	translationLines,
 } as const;
