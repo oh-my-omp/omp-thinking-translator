@@ -19,7 +19,7 @@ flowchart LR
   D -->|uncached canonical line| C[cells Map<br/>key = chain of provider/id@effort + targetLanguage + raw line]
   C --> S[translateLine: each round tries translatorModels 1→N<br/>resolveModel → streamTranslation (pi-ai streamSimple + effort)<br/>SOURCE_TEXT_BEGIN echo → abort attempt + next model<br/>whole chain failed → backoff 500/2000/6000 ms, restart at 1]
   S -->|finished line or error → requestRender| R
-  C -->|done but never painted| L[lateQueue → 400 ms debounce → buildLateRows → ctx.ui.notify]
+  C -->|done but never painted| L[lateQueue → 400 ms window per cell → buildLateRows → ctx.ui.notify]
 ```
 
 Key invariants (deliberate; do not "simplify" them):

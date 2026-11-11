@@ -159,9 +159,10 @@ export default function thinkingTranslator(pi: ExtensionAPI) {
 
 	/**
 	 * 译文先进入待发送队列；条目持有 cell，所以去抖期间若重绘赶上了，flush 会按最新 painted
-	 * 快照把它过滤掉，不会再把已经画进 thinking 框的译文重复送进 transcript。
+	 * 快照把它过滤掉，不会再把已经画进 thinking 框的译文重复送进 transcript。每条带自己的
+	 * `dueAt`（入队时刻 + 去抖窗口），队列按入队顺序即按 `dueAt` 升序。
 	 */
-	const lateQueue: { thinkingIndex: number; text: string; cell: TranslationCell }[] = [];
+	const lateQueue: { thinkingIndex: number; text: string; cell: TranslationCell; dueAt: number }[] = [];
 	let lateNotifyTimer: NodeJS.Timeout | undefined;
 	let lastLatePayload: LateRowsPayload | undefined;
 	let chatContentGeneration = 0;
@@ -490,32 +491,48 @@ export default function thinkingTranslator(pi: ExtensionAPI) {
 	});
 
 	/**
-	 * 翻译完成后先留在队列里，给仍可能存活的 thinking 框一个重绘窗口；计时器到期时按当前
-	 * painted 快照构造一条 notify 行。showStatus 的身份合并规则见上面的 generation 说明。
+	 * 翻译完成后先留在队列里，每格从入队起都有完整的去抖窗口给仍可能存活的 thinking 框重绘；
+	 * 计时器在队首到期时只取出已到期的格，按当前 painted 快照构造 notify 行，余下的格等各自
+	 * 到期。共享一个从队首起算的窗口时，窗口末尾才入队的格还没等到宿主下一帧就被当成未画上。
+	 * showStatus 的身份合并规则见上面的 generation 说明。
 	 */
 	function scheduleLateNotify(): void {
-		if (lateNotifyTimer !== undefined) return;
-		lateNotifyTimer = setTimeout(() => {
-			lateNotifyTimer = undefined;
-			flushLateNotifications();
-		}, LATE_NOTIFY_DEBOUNCE_MS);
+		const head = lateQueue[0];
+		if (lateNotifyTimer !== undefined || head === undefined) return;
+		lateNotifyTimer = setTimeout(
+			() => {
+				lateNotifyTimer = undefined;
+				flushLateNotifications();
+				scheduleLateNotify();
+			},
+			Math.max(1, Math.ceil(head.dueAt - performance.now())),
+		);
 		lateNotifyTimer.unref?.();
 	}
 
 	function flushLateNotifications(): void {
+		const now = performance.now();
+		const dueCount = lateQueue.findIndex(({ dueAt }) => dueAt > now);
+		const due = lateQueue.splice(0, dueCount === -1 ? lateQueue.length : dueCount);
+		if (due.length === 0) return;
 		const ctx = latestContext;
 		if (!ctx?.ui?.notify) {
-			trace("lateFlush", { dropped: lateQueue.length, reason: "no-notify-ctx" });
-			lateQueue.length = 0;
+			trace("lateFlush", { dropped: due.length, reason: "no-notify-ctx" });
 			return;
 		}
 		const payload = buildLateRows(
-			lateQueue.map(({ thinkingIndex, text, cell }) => ({ thinkingIndex, text, painted: cell.painted })),
+			due.map(({ thinkingIndex, text, cell }) => ({ thinkingIndex, text, painted: cell.painted })),
 			lastLatePayload,
 			lastLatePayload !== undefined && lastLateNotifyGeneration === chatContentGeneration,
 		);
-		trace("lateFlush", { queued: lateQueue.length, painted: lateQueue.filter(({ cell }) => cell.painted).length, rows: payload?.rows.length ?? 0, generation: chatContentGeneration });
-		lateQueue.length = 0;
+		trace("lateFlush", {
+			queued: due.length,
+			painted: due.filter(({ cell }) => cell.painted).length,
+			rows: payload?.rows.length ?? 0,
+			notified: due.filter(({ cell }) => !cell.painted).map(({ text }) => text.slice(0, 40)),
+			waiting: lateQueue.length,
+			generation: chatContentGeneration,
+		});
 		if (!payload) return;
 		ctx.ui.notify(payload.text, "info");
 		lastLatePayload = payload;
@@ -617,13 +634,13 @@ export default function thinkingTranslator(pi: ExtensionAPI) {
 
 	/**
 	 * 译文完成时才知道它有没有赶上重绘：宿主把 thinking 行提交进原生历史后组件不再被渲染，
-	 * 那一格若仍未画上去，就先排进 transcript notify 队列；去抖期间的重绘会由 flush 的 painted
-	 * 快照过滤掉，避免已经画进框的译文再次出现。
+	 * 那一格若仍未画上去，就先排进 transcript notify 队列；它自己的去抖窗口内的重绘会由 flush
+	 * 的 painted 快照过滤掉，避免已经画进框的译文再次出现。
 	 */
 	function noteTranslationSettled(cell: TranslationCell, thinkingIndex: number, signal: AbortSignal): void {
 		trace("settled", { thinkingIndex, status: cell.progress.status, painted: cell.painted, aborted: signal.aborted });
 		if (signal.aborted || nativeSeen || cell.progress.status !== "done" || !cell.progress.translation || cell.painted) return;
-		lateQueue.push({ thinkingIndex, text: cell.progress.translation, cell });
+		lateQueue.push({ thinkingIndex, text: cell.progress.translation, cell, dueAt: performance.now() + LATE_NOTIFY_DEBOUNCE_MS });
 		scheduleLateNotify();
 	}
 
