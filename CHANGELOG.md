@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.12.4] - 2026-11-12
+
 ### Fixed
 
 - A translated line that finished a few milliseconds before the late-translation debounce timer expired was written as an extra transcript notify row even though the still-repainting translation box showed it; every finished line now gets its own full debounce window, and only lines the box never drew are sent as notify rows.
