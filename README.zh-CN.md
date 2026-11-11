@@ -26,10 +26,10 @@
 
 ## 安装
 
-本扩展从 git 安装，没有发布到任何包仓库。
+本扩展从 git 安装，没有发布到任何包仓库。安装走 `release` 分支，由每天的发布运行更新；已安装的副本用 `omp plugin upgrade` 升到最新发布版。
 
 ```bash
-omp plugin install git:github.com/oh-my-omp/omp-thinking-translator
+omp plugin install https://github.com/oh-my-omp/omp-thinking-translator#release
 ```
 
 本地开发时，可以直接加载扩展文件：
@@ -51,7 +51,7 @@ manifest 键是 `omp.extensions`。`@oh-my-pi/*` 包只作为开发依赖，并�
 1. 安装扩展：
 
    ```bash
-   omp plugin install git:github.com/oh-my-omp/omp-thinking-translator
+   omp plugin install https://github.com/oh-my-omp/omp-thinking-translator#release
    ```
 
 2. 每台新机器都需要在 omp 里创建本插件自己的全局配置模板：
