@@ -26,10 +26,10 @@ This extension is omp-only, not a pi extension. It is built on omp's extension A
 
 ## Install
 
-This extension is installed from git; it is not published to any package registry.
+This extension is installed from git; it is not published to any package registry. Installs track the `release` branch, which the daily release run updates; `omp plugin upgrade` moves an existing install to the latest published version.
 
 ```bash
-omp plugin install git:github.com/oh-my-omp/omp-thinking-translator
+omp plugin install https://github.com/oh-my-omp/omp-thinking-translator#release
 ```
 
 For local development, either load the extension file directly:
@@ -51,7 +51,7 @@ The manifest key is `omp.extensions`. The `@oh-my-pi/*` packages are development
 1. Install the extension:
 
    ```bash
-   omp plugin install git:github.com/oh-my-omp/omp-thinking-translator
+   omp plugin install https://github.com/oh-my-omp/omp-thinking-translator#release
    ```
 
 2. On each new machine, create this plugin's own global config template from inside omp:

@@ -16,14 +16,25 @@ pnpm check   # 契约测试跑在新宿主源码上，这是升级的验证点
 
 契约测试因此失败说明宿主改了展示改写规则，那就修扩展去适配新行为，不要把依赖钉回旧版。
 
-# 每次推到 `main` 都会得到新的 `version`
+# `version` 由每日发布写入
 
 `package.json` 的 `version` 在这里不是 npm 发布元数据（本包 `private`，不发布），而是**已安装副本的身份**：
 `omp plugin list` 和 `~/.omp/plugins/omp-plugins.lock.json` 的 `version` 取自它
 （`manager.ts:613,625`），`omp plugin upgrade` 的更新判定是
 `Bun.semver.order(catalogVersion, installed.version) > 0`（`marketplace/manager.ts:665`）。
 
-版本不变的后果：升级检查永远报"已是最新"，改动只能靠整包 `plugin install` 重新 pin git ref 才会落地，
-而"装上的到底是哪一版"只能去 grep 安装目录的源码——用户和我都无法从插件状态分辨。
+所以 `version` 必须跟着发布走：升级检查靠它判断有没有新版本，改动只有落到发布版本上才会被
+`omp plugin upgrade` 装下来，"装上的到底是哪一版"也只能从它读出来。
 
-规则：`.github/workflows/bump-version.yml` 在每次 push 到 `main` 后把 `version` 的 patch 加一，并以 `github-actions[bot]` 提交回 `main`，所以纯修复不用手动改版本。1.0 前有行为可见变化的提交，在提交前把 `version` 手动改成下一个 minor（`0.(Y+1).0`），推送后 CI 会再把它加成 `0.(Y+1).1`。推送后等这次 run 完成，再 `omp plugin install` 或 `omp plugin upgrade`，并用 `omp plugin list` 核对显示的是 `main` 上的最新版本号。
+合并到 `main` 不是发布，也不改 `version`。发布是 `.github/workflows/omomp-release.yml` 调用的共享
+workflow：每天 GMT+9 02:00（cron `0 17 * * *`）或手动 `workflow_dispatch` 触发一次，把
+`CHANGELOG.md` 的 `## [Unreleased]` 改写成新版本段，提交 `chore: release X.Y.Z`，再把 `main`、tag
+`vX.Y.Z` 与 `release` 分支原子推送，并用这一段建 GitHub Release。新版本由条目分类决定：
+`### Breaking Changes` 在 1.0 及以上升 major、1.0 前升 minor，`### Added` 升 minor，其余升 patch。
+所以提交里不改 `version`，也不手动写版本段。
+
+条目由 lgit 写：`git add` 后运行 `uvx --from lgit-cli lgit`，它生成提交说明并把每个暂存文件的用户可见
+变化写进 `CHANGELOG.md` 的 `## [Unreleased]`。
+
+客户机从 `#release` 安装：`omp plugin install https://github.com/oh-my-omp/omp-thinking-translator#release`，
+之后 `omp plugin upgrade` 升到最新发布版，`omp plugin list` 显示的就是发布版本号。
