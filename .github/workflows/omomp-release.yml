@@ -1,0 +1,13 @@
+name: omomp-release
+
+on:
+  schedule:
+    - cron: "0 17 * * *" # 02:00 GMT+9
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    uses: oh-my-omp/.github/.github/workflows/omomp-release.yml@main
