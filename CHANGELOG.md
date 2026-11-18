@@ -6,6 +6,10 @@
 
 - Updated the shared copy of `i18n.ts` to oh-my-omp/shared@33dbe00.
 
+### Fixed
+
+- A config file that parses as JSON but has an invalid field (for example `"enabled": "yes"`) no longer repeats its "config invalid, translation disabled" warning on every message; the warning appears once per path until that path loads successfully again.
+
 ## [0.12.4] - 2026-11-12
 
 ### Fixed
