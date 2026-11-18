@@ -208,11 +208,11 @@ Translation backends receive the eligible thinking lines, so use a local model i
 ## Development
 
 ```bash
-pnpm install
-pnpm check
+bun install
+bun run check
 ```
 
-`pnpm check` runs the TypeScript check plus the test file. Tests run under Bun because the host packages expose TypeScript sources as their entries.
+`bun run check` runs the Biome check plus the TypeScript check; `bun test` runs the test file. Tests run under Bun because the host packages expose TypeScript sources as their entries.
 
 ## Package Layout
 

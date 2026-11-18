@@ -34,7 +34,7 @@
  * the run fails when a worker hits either, and ends by printing the peak worker RSS it saw.
  */
 import { heapStats, memoryUsage as jscMemory } from "bun:jsc";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, writeSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
@@ -202,10 +202,11 @@ function makeBlock(next: () => number, rows: number, serial: { value: number }):
 		} else {
 			const count = 8 + Math.floor(next() * 14);
 			const words: string[] = [];
-			for (let w = 0; w < count; w++) words.push(next() < 0.06 ? CODE[Math.floor(next() * CODE.length)]! : WORDS[Math.floor(next() * WORDS.length)]!);
+			for (let w = 0; w < count; w++)
+				words.push(next() < 0.06 ? CODE[Math.floor(next() * CODE.length)]! : WORDS[Math.floor(next() * WORDS.length)]!);
 			words.push(`(step ${serial.value++})`);
 			const sentence = words.join(" ");
-			const line = sentence[0]!.toUpperCase() + sentence.slice(1) + ".";
+			const line = `${sentence[0]!.toUpperCase() + sentence.slice(1)}.`;
 			lines.push(line);
 			written.push(line);
 		}
@@ -255,7 +256,8 @@ function latency(source: string): number {
 
 async function runWorker(options: Options, mode: Mode): Promise<WorkerOutput> {
 	// Imported here, not at the top: the orchestrating parent process never loads the host packages.
-	const { AssistantMessageEventStream, registerCustomApi } = await import("@oh-my-pi/pi-ai");
+	const { registerCustomApi } = await import("@oh-my-pi/pi-ai");
+	const { AssistantMessageEventStream } = await import("@oh-my-pi/pi-ai/utils/event-stream");
 	const { formatThinkingForDisplay } = await import("@oh-my-pi/pi-tui/chat/thinking-display");
 	const { Settings } = await import("@oh-my-pi/pi-coding-agent");
 
@@ -266,7 +268,12 @@ async function runWorker(options: Options, mode: Mode): Promise<WorkerOutput> {
 	mkdirSync(join(cwd, ".omp"), { recursive: true });
 	writeFileSync(
 		join(cwd, ".omp", "thinking-translator.json"),
-		JSON.stringify({ enabled: true, targetLanguage: "Simplified Chinese", translatorModels: [{ provider: PROVIDER, id: "echo" }], trace: traceFile }),
+		JSON.stringify({
+			enabled: true,
+			targetLanguage: "Simplified Chinese",
+			translatorModels: [{ provider: PROVIDER, id: "echo" }],
+			trace: traceFile,
+		}),
 	);
 
 	// ---- fake provider: requests wait `latency` frames, then stream the translation in three deltas.
@@ -285,7 +292,14 @@ async function runWorker(options: Options, mode: Mode): Promise<WorkerOutput> {
 		contextWindow: 32_000,
 		maxTokens: 8_192,
 	};
-	const emptyUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+	const emptyUsage = {
+		input: 0,
+		output: 0,
+		cacheRead: 0,
+		cacheWrite: 0,
+		totalTokens: 0,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+	};
 	const assistant = (text: string) => ({
 		role: "assistant" as const,
 		content: text ? [{ type: "text" as const, text }] : [],
@@ -298,8 +312,14 @@ async function runWorker(options: Options, mode: Mode): Promise<WorkerOutput> {
 	});
 	registerCustomApi(PROVIDER, (_model, context) => {
 		const message = context.messages[0];
-		const prompt = message && message.role === "user" && Array.isArray(message.content) && message.content[0]?.type === "text" ? message.content[0].text : "";
-		const source = prompt.slice(prompt.indexOf("SOURCE_TEXT_BEGIN\n") + "SOURCE_TEXT_BEGIN\n".length, prompt.lastIndexOf("\nSOURCE_TEXT_END"));
+		const prompt =
+			message && message.role === "user" && Array.isArray(message.content) && message.content[0]?.type === "text"
+				? message.content[0].text
+				: "";
+		const source = prompt.slice(
+			prompt.indexOf("SOURCE_TEXT_BEGIN\n") + "SOURCE_TEXT_BEGIN\n".length,
+			prompt.lastIndexOf("\nSOURCE_TEXT_END"),
+		);
 		const stream = new AssistantMessageEventStream();
 		pending.push({ due: frame + latency(source), source, stream });
 		return stream;
@@ -339,7 +359,10 @@ async function runWorker(options: Options, mode: Mode): Promise<WorkerOutput> {
 	// ---- fake host
 	const notifies: string[] = [];
 	type Handler = (event: unknown, ctx: unknown) => void;
-	type Renderer = (context: { contentIndex: number; thinkingIndex: number; text: string; requestRender(): void }, theme: unknown) => HostComponent | undefined;
+	type Renderer = (
+		context: { contentIndex: number; thinkingIndex: number; text: string; requestRender(): void },
+		theme: unknown,
+	) => HostComponent | undefined;
 	const handlers = new Map<string, Handler[]>();
 	let renderer: Renderer | undefined;
 	const sessionFile = join(root, "session.jsonl");
@@ -428,10 +451,8 @@ async function runWorker(options: Options, mode: Mode): Promise<WorkerOutput> {
 	if (process.env.BUN_JSC_logGC) writeSync(2, `${MARK_START}\n`);
 	const startAlloc = process.memoryUsage().heapUsed + jscMemory().current;
 	emit("session_start", {});
-	let messageSeq = 0;
 	const history: { thinkingIndex: number; contentIndex: number; display: string }[] = [];
 	for (const message of load) {
-		messageSeq++;
 		emit("message_start", { message: { role: "assistant" } });
 		const mounted: Mounted[] = [];
 		const content: { type: "thinking"; thinking: string }[] = [];
@@ -487,7 +508,10 @@ async function runWorker(options: Options, mode: Mode): Promise<WorkerOutput> {
 	for (const entry of history) {
 		const started = performance.now();
 		factoryCalls++;
-		const component = factory({ contentIndex: entry.contentIndex, thinkingIndex: entry.thinkingIndex, text: entry.display, requestRender }, theme);
+		const component = factory(
+			{ contentIndex: entry.contentIndex, thinkingIndex: entry.thinkingIndex, text: entry.display, requestRender },
+			theme,
+		);
 		if (component) renderAll([{ thinkingIndex: entry.thinkingIndex, component }]);
 		activeMs += performance.now() - started;
 	}
@@ -519,8 +543,14 @@ async function runWorker(options: Options, mode: Mode): Promise<WorkerOutput> {
  */
 async function runSnapshot(options: Options): Promise<{ ownBytes: number; retainedBytes: number; controlBytes: number; rawBytes: number }> {
 	// The extension under test is chosen on the command line (current tree, baseline checkout).
-	const mod: { __testing: { cellKey(config: unknown, line: string): string; matchBlockLine(raw: string, line: string, ended?: boolean): string | undefined; splitTranslationLines(text: string): string[]; DEFAULT_CONFIG: unknown } } =
-		await import(resolve(options.extension));
+	const mod: {
+		__testing: {
+			cellKey(config: unknown, line: string): string;
+			matchBlockLine(raw: string, line: string, ended?: boolean): string | undefined;
+			splitTranslationLines(text: string): string[];
+			DEFAULT_CONFIG: unknown;
+		};
+	} = await import(resolve(options.extension));
 	const { cellKey, matchBlockLine, splitTranslationLines, DEFAULT_CONFIG } = mod.__testing;
 	const config = { ...(DEFAULT_CONFIG as object), translatorModels: [{ provider: PROVIDER, id: "echo" }] };
 	const retained = (): number => {
@@ -552,7 +582,7 @@ async function runSnapshot(options: Options): Promise<{ ownBytes: number; retain
 					const translation = translate(canonical);
 					map.set(key, { progress: { status: "done", translation }, painted: true });
 					// Characters as stored: Latin-only strings take one byte each, strings with CJK two.
-					own += key.length * (/[^\u0000-\u00ff]/.test(key) ? 2 : 1) + translation.length * 2;
+					own += key.length * (/[\u0100-\uffff]/.test(key) ? 2 : 1) + translation.length * 2;
 				}
 			}
 		}
@@ -613,10 +643,21 @@ const WORKER_RSS_POLL_MS = 200;
 let peakWorkerRss = 0;
 
 async function runCapped(argv: readonly string[], env: Record<string, string | undefined>, captureStderr: boolean): Promise<string> {
-	const child = Bun.spawn([...argv], { env, stdout: "inherit", stderr: captureStderr ? "pipe" : "inherit", timeout: WORKER_TIMEOUT_MS, killSignal: "SIGKILL" });
+	const child = Bun.spawn([...argv], {
+		env,
+		stdout: "inherit",
+		stderr: captureStderr ? "pipe" : "inherit",
+		timeout: WORKER_TIMEOUT_MS,
+		killSignal: "SIGKILL",
+	});
 	let overCap = 0;
 	const poll = setInterval(() => {
-		const rss = Number(Bun.spawnSync(["ps", "-o", "rss=", "-p", String(child.pid)]).stdout.toString().trim()) * 1024;
+		const rss =
+			Number(
+				Bun.spawnSync(["ps", "-o", "rss=", "-p", String(child.pid)])
+					.stdout.toString()
+					.trim(),
+			) * 1024;
 		if (rss > peakWorkerRss) peakWorkerRss = rss;
 		if (rss > WORKER_MEMORY_CAP_BYTES) {
 			overCap = rss;
@@ -626,20 +667,47 @@ async function runCapped(argv: readonly string[], env: Record<string, string | u
 	const [exitCode, stderr] = await Promise.all([child.exited, captureStderr ? new Response(child.stderr).text() : ""]);
 	clearInterval(poll);
 	if (overCap) throw new Error(`worker killed at RSS ${mb(overCap)} (cap ${mb(WORKER_MEMORY_CAP_BYTES)}): ${argv.slice(1).join(" ")}`);
-	if (child.signalCode) throw new Error(`worker killed by ${child.signalCode} (deadline ${WORKER_TIMEOUT_MS / 60_000} min): ${argv.slice(1).join(" ")}`);
+	if (child.signalCode)
+		throw new Error(`worker killed by ${child.signalCode} (deadline ${WORKER_TIMEOUT_MS / 60_000} min): ${argv.slice(1).join(" ")}`);
 	if (exitCode !== 0) throw new Error(`worker exited ${exitCode}: ${argv.slice(1).join(" ")}\n${stderr.slice(-2000)}`);
 	return stderr;
 }
 
-async function spawnWorker(options: Options, extension: string, mode: Mode, gc: "off" | "on" | "logged"): Promise<WorkerOutput & { gcLog?: GcLog }> {
+async function spawnWorker(
+	options: Options,
+	extension: string,
+	mode: Mode,
+	gc: "off" | "on" | "logged",
+): Promise<WorkerOutput & { gcLog?: GcLog }> {
 	const root = mkdtempSync(join(tmpdir(), "ott-repro-"));
 	const out = join(root, "result.json");
-	const env: Record<string, string | undefined> = { ...process.env, OTT_REPRO_ROOT: root, PI_CODING_AGENT_DIR: join(root, "agent"), BUN_JSC_useGC: undefined, BUN_JSC_logGC: undefined };
+	const env: Record<string, string | undefined> = {
+		...process.env,
+		OTT_REPRO_ROOT: root,
+		PI_CODING_AGENT_DIR: join(root, "agent"),
+		BUN_JSC_useGC: undefined,
+		BUN_JSC_logGC: undefined,
+	};
 	if (gc === "off") env.BUN_JSC_useGC = "0";
 	if (gc === "logged") env.BUN_JSC_logGC = "1";
 	mkdirSync(join(root, "agent"), { recursive: true });
 	const stderr = await runCapped(
-		[process.execPath, SCRIPT, "--worker", mode, "--rows", String(options.rows), "--shape", options.shape, "--surface", options.surface, "--extension", extension, "--out", out],
+		[
+			process.execPath,
+			SCRIPT,
+			"--worker",
+			mode,
+			"--rows",
+			String(options.rows),
+			"--shape",
+			options.shape,
+			"--surface",
+			options.surface,
+			"--extension",
+			extension,
+			"--out",
+			out,
+		],
 		env,
 		gc === "logged",
 	);
@@ -659,9 +727,20 @@ const mb = (bytes: number): string => `${(bytes / 1e6).toFixed(2)} MB`;
  * same machine load in each round; medians are taken per target afterwards.
  */
 async function measure(options: Options): Promise<void> {
-	const targets: [string, string][] = [["extension", options.extension], ["null control", NULL_EXTENSION]];
+	const targets: [string, string][] = [
+		["extension", options.extension],
+		["null control", NULL_EXTENSION],
+	];
 	if (options.baseline) targets.push(["baseline", options.baseline]);
-	const samples = targets.map(() => ({ gcAlloc: [] as number[], gcPause: [] as number[], alloc: [] as number[], heap: [] as number[], malloc: [] as number[], time: [] as number[], last: undefined as WorkerResult | undefined }));
+	const samples = targets.map(() => ({
+		gcAlloc: [] as number[],
+		gcPause: [] as number[],
+		alloc: [] as number[],
+		heap: [] as number[],
+		malloc: [] as number[],
+		time: [] as number[],
+		last: undefined as WorkerResult | undefined,
+	}));
 	for (let run = 0; run < options.runs; run++) {
 		for (const [index, [label, extension]] of targets.entries()) {
 			const sample = samples[index]!;
@@ -672,7 +751,8 @@ async function measure(options: Options): Promise<void> {
 			sample.malloc.push(logged.result.mallocAfterGc);
 			sample.time.push(logged.result.activeMs);
 			sample.last = logged.result;
-			if (options.gcOff && label !== "baseline") sample.alloc.push((await spawnWorker(options, extension, "measure", "off")).result.allocBytes);
+			if (options.gcOff && label !== "baseline")
+				sample.alloc.push((await spawnWorker(options, extension, "measure", "off")).result.allocBytes);
 		}
 	}
 	const summary: Record<string, Record<string, number>> = {};
@@ -746,8 +826,17 @@ async function main(): Promise<void> {
 		for (const extension of options.baseline ? [options.extension, options.baseline] : [options.extension]) {
 			const root = mkdtempSync(join(tmpdir(), "ott-repro-"));
 			const out = join(root, "result.json");
-			await runCapped([process.execPath, SCRIPT, "--worker", "snapshot", "--rows", String(options.rows), "--extension", extension, "--out", out], { ...process.env, OTT_REPRO_ROOT: root, PI_CODING_AGENT_DIR: join(root, "agent") }, false);
-			const { ownBytes, retainedBytes, controlBytes, rawBytes } = JSON.parse(readFileSync(out, "utf8")) as { ownBytes: number; retainedBytes: number; controlBytes: number; rawBytes: number };
+			await runCapped(
+				[process.execPath, SCRIPT, "--worker", "snapshot", "--rows", String(options.rows), "--extension", extension, "--out", out],
+				{ ...process.env, OTT_REPRO_ROOT: root, PI_CODING_AGENT_DIR: join(root, "agent") },
+				false,
+			);
+			const { ownBytes, retainedBytes, controlBytes, rawBytes } = JSON.parse(readFileSync(out, "utf8")) as {
+				ownBytes: number;
+				retainedBytes: number;
+				controlBytes: number;
+				rawBytes: number;
+			};
 			console.log(
 				`${label(extension).padEnd(10)} rows=${options.rows} cell map own key/value bytes ${mb(ownBytes)}, retained ${mb(retainedBytes)} (${(retainedBytes / ownBytes).toFixed(2)}× own); control with copied lines retained ${mb(controlBytes)} (${(controlBytes / ownBytes).toFixed(2)}× own); raw text streamed ${mb(rawBytes)}`,
 			);
@@ -756,7 +845,10 @@ async function main(): Promise<void> {
 		await traceDiff(options);
 	} else if (options.frames) {
 		const output = await spawnWorker(options, options.extension, "frames", "on");
-		writeFileSync(options.frames, JSON.stringify({ rows: options.rows, shape: options.shape, frames: output.frames, notifies: output.notifies }));
+		writeFileSync(
+			options.frames,
+			JSON.stringify({ rows: options.rows, shape: options.shape, frames: output.frames, notifies: output.notifies }),
+		);
 		console.log(`wrote ${output.frames?.length ?? 0} frames and ${output.notifies.length} notify payloads to ${options.frames}`);
 	} else {
 		await measure(options);
