@@ -208,11 +208,11 @@ omp 扩展拥有完整的系统权限。安装第三方包前请审阅扩展源�
 ## 开发
 
 ```bash
-pnpm install
-pnpm check
+bun install
+bun run check
 ```
 
-`pnpm check` 运行 TypeScript 检查和测试文件。测试在 Bun 下运行，因为宿主包以 TypeScript 源码作为入口。
+`bun run check` 运行 Biome 检查和 TypeScript 检查；`bun test` 运行测试文件。测试在 Bun 下运行，因为宿主包以 TypeScript 源码作为入口。
 
 ## 包结构
 

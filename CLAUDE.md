@@ -10,8 +10,9 @@
 
 ```bash
 # 取 dist-tags.latest，三个包对齐同一版本
-pnpm install
-pnpm check   # 契约测试跑在新宿主源码上，这是升级的验证点
+bun install
+bun run check   # Biome 与类型检查
+bun run test    # 契约测试跑在新宿主源码上，这是升级的验证点
 ```
 
 契约测试因此失败说明宿主改了展示改写规则，那就修扩展去适配新行为，不要把依赖钉回旧版。

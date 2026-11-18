@@ -1,9 +1,0 @@
-allowBuilds:
-  '@google/genai': false
-  esbuild: false
-  koffi: false
-  onnxruntime-node: false
-  protobufjs: false
-  sharp: false
-minimumReleaseAgeExclude:
-  - '@oh-my-pi/*'
