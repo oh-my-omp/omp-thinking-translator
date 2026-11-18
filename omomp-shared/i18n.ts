@@ -48,7 +48,10 @@ export function language(): Language {
 	return languageFrom(process.env);
 }
 
-/** The text for the current language; both are written where the text is used, English first. */
+/**
+ * The text for the current language; both are written where the text is used, English first.
+ * The language is read at each call, so text built once at import keeps the language of that moment.
+ */
 export function tr(en: string, zh: string): string {
 	return language() === "zh" ? zh : en;
 }
