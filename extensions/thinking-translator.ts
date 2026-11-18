@@ -1103,8 +1103,8 @@ function loadConfigState(ctx?: NotifierContext): ConfigState {
 		}
 		try {
 			const raw: unknown = JSON.parse(readFileSync(info.path, "utf8"));
-			configErrorNotified.delete(info.path);
 			config = mergeConfig(config, raw);
+			configErrorNotified.delete(info.path);
 		} catch (error) {
 			errors.push({ scope: info.scope, path: info.path, error });
 			notifyConfigLoadError(ctx, info.path, error);
