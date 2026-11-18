@@ -1,48 +1,50 @@
 {
-  "name": "omp-thinking-translator",
-  "version": "0.12.4",
-  "description": "omp extension for translating visible assistant thinking blocks.",
-  "type": "module",
-  "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/oh-my-omp/omp-thinking-translator.git"
-  },
-  "homepage": "https://github.com/oh-my-omp/omp-thinking-translator#readme",
-  "bugs": {
-    "url": "https://github.com/oh-my-omp/omp-thinking-translator/issues"
-  },
-  "private": true,
-  "keywords": [
-    "omp",
-    "omp-extension",
-    "thinking",
-    "translation"
-  ],
-  "scripts": {
-    "typecheck": "tsc --noEmit --skipLibCheck --moduleResolution bundler --module esnext --target es2024 --types node extensions/thinking-translator.ts",
-    "test": "bun test tests/thinking-translator.test.ts",
-    "check": "pnpm typecheck && pnpm test"
-  },
-  "files": [
-    "extensions",
-    "README.md",
-    "README.zh-CN.md",
-    "CHANGELOG.md"
-  ],
-  "omp": {
-    "extensions": [
-      "./extensions/thinking-translator.ts"
-    ]
-  },
-  "omomp": {
-    "changelog": "CHANGELOG.md"
-  },
-  "devDependencies": {
-    "@oh-my-pi/pi-ai": "18.16.0",
-    "@oh-my-pi/pi-coding-agent": "18.16.0",
-    "@oh-my-pi/pi-tui": "18.16.0",
-    "@types/node": "^24.3.0",
-    "typescript": "^5.7.3"
-  }
+	"name": "omp-thinking-translator",
+	"version": "0.12.4",
+	"description": "omp extension for translating visible assistant thinking blocks.",
+	"type": "module",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/oh-my-omp/omp-thinking-translator.git"
+	},
+	"homepage": "https://github.com/oh-my-omp/omp-thinking-translator#readme",
+	"bugs": {
+		"url": "https://github.com/oh-my-omp/omp-thinking-translator/issues"
+	},
+	"private": true,
+	"keywords": [
+		"omp",
+		"omp-extension",
+		"thinking",
+		"translation"
+	],
+	"scripts": {
+		"check": "biome check . && tsc --noEmit",
+		"format": "biome check --write .",
+		"test": "bun test"
+	},
+	"files": [
+		"extensions",
+		"omomp-shared",
+		"README.md",
+		"README.zh-CN.md",
+		"CHANGELOG.md"
+	],
+	"omp": {
+		"extensions": [
+			"./extensions/thinking-translator.ts"
+		]
+	},
+	"omomp": {
+		"changelog": "CHANGELOG.md"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "latest",
+		"@oh-my-pi/pi-ai": "latest",
+		"@oh-my-pi/pi-coding-agent": "latest",
+		"@oh-my-pi/pi-tui": "latest",
+		"@types/bun": "latest",
+		"typescript": "latest"
+	}
 }
