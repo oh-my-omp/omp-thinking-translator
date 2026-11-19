@@ -1,18 +1,15 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { type Api, type Model, type SimpleStreamOptions, streamSimple } from "@oh-my-pi/pi-ai";
-import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import { type Api, type Effort, type Model, type SimpleStreamOptions, streamSimple, THINKING_EFFORTS } from "@oh-my-pi/pi-ai";
+import type { AssistantThinkingRenderContext, ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { getAgentDir, getMarkdownTheme } from "@oh-my-pi/pi-coding-agent";
 import { cfgExpandThinkingBlocks } from "@oh-my-pi/pi-coding-agent/session/settings";
 import type { Component, DescribeContext, NativeEventTarget, NativeNode, NativeUiEvent } from "@oh-my-pi/pi-tui";
 import { Box, Markdown, node, span, Text } from "@oh-my-pi/pi-tui";
-import type { AssistantThinkingRenderContext } from "@oh-my-pi/pi-tui/chat/extension-types";
 import type { Theme } from "@oh-my-pi/pi-tui/theme/theme";
 import { tr } from "../omomp-shared/i18n.ts";
 
-/** 宿主的推理等级（pi-catalog 的 const enum `Effort`）；插件解析不到 pi-catalog，只能从 pi-ai 的选项类型取。 */
-type Effort = NonNullable<SimpleStreamOptions["reasoning"]>;
 /** 配置里的推理强度：宿主等级的字符串取值，加上关闭推理的 `off`。 */
 type EffortSetting = "off" | `${Effort}`;
 type ModelRef = { provider: string; id: string; effort?: EffortSetting };
@@ -127,8 +124,6 @@ function resolveTraceFile(config: ResolvedTranslatorConfig, sessionFile: string 
  * 都重新查注册表、查不到就重新发现；只把同一 provider 正在进行的那一次发现合并给并发的行，结束即删。
  */
 const discoveryInFlight = new Map<string, Promise<void>>();
-/** 宿主 `Effort` 的全部取值；用 Record 表达，宿主增删等级时类型检查会在这里报错。 */
-const EFFORT_LEVELS: Readonly<Record<`${Effort}`, true>> = { minimal: true, low: true, medium: true, high: true, xhigh: true, max: true };
 const configErrorNotified = new Set<string>();
 const translationFailureNotified = new Set<string>();
 const missingModelNotified = new Set<string>();
@@ -905,7 +900,7 @@ function modelLabel(model: ModelRef): string {
 function reasoningOptions(effort: EffortSetting | undefined): Pick<SimpleStreamOptions, "reasoning" | "disableReasoning"> {
 	if (effort === undefined) return {};
 	if (effort === "off") return { disableReasoning: true };
-	// const enum 的成员类型不接受字符串字面量；两者取值一一对应，由 EFFORT_LEVELS 的 Record 类型保证。
+	// const enum 的成员类型不接受字符串字面量；`${Effort}` 的取值与成员值相同，只能在此断言。
 	return { reasoning: effort as Effort };
 }
 
@@ -1165,15 +1160,12 @@ function parseModelRef(value: unknown, path: string): ModelRef {
 function parseEffortSetting(value: unknown, path: string): EffortSetting {
 	if (value === "off" || (typeof value === "string" && isEffortLevel(value))) return value;
 	throw new Error(
-		tr(
-			`${path} must be one of: off, ${Object.keys(EFFORT_LEVELS).join(", ")}`,
-			`${path} 必须是以下值之一：off、${Object.keys(EFFORT_LEVELS).join("、")}`,
-		),
+		tr(`${path} must be one of: off, ${THINKING_EFFORTS.join(", ")}`, `${path} 必须是以下值之一：off、${THINKING_EFFORTS.join("、")}`),
 	);
 }
 
 function isEffortLevel(value: string): value is `${Effort}` {
-	return Object.hasOwn(EFFORT_LEVELS, value);
+	return THINKING_EFFORTS.some((level) => level === value);
 }
 
 /** 同一路径只提示一次配置错误，避免每个消息周期刷屏。 */

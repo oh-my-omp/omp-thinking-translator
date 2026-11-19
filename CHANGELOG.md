@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- The `effort` setting of the translator models now accepts exactly the reasoning levels of the running omp (`THINKING_EFFORTS` from `@oh-my-pi/pi-ai`), plus `off`; an invalid value's error message lists those levels, so a level omp adds or drops is picked up without a plugin release.
+
 ## [0.12.5] - 2026-11-19
 
 ### Changed
