@@ -2,115 +2,83 @@
 
 ## Project Overview
 
-`omp-thinking-translator` is a single-file [Oh My Pi](https://github.com/oh-my-pi) (omp) extension that renders a translated copy of each visible assistant *thinking* block underneath it in the TUI. Translation is **display-only and memory-only**: it is never written to the session file, model requests, or compaction input. The only file the extension writes by default is a diagnostic trace, `<session file without .jsonl>.thinking-translator-trace.jsonl` next to the session JSONL (config `trace: false` disables it; the session file itself is never touched). Default target language is Simplified Chinese; the translator models are an ordered fallback chain chosen by config (`translatorModels: [{ provider, id, effort? }, …]`), each resolved through the host model registry at request time, with the extension triggering provider discovery itself when a model is absent.
+`omp-thinking-translator` is an [Oh My Pi](https://github.com/oh-my-pi) (omp) plugin that draws a translated copy of each visible assistant thinking line under its thinking block. Translation is display-only and memory-only: nothing is written to the session file, model requests or compaction input, and the plugin writes no files. It is omp-only and depends on omp's package exports directly.
 
-Package is `private` (not published to npm); it is installed into omp directly from git. `CLAUDE.md` holds two hard rules — keep `@oh-my-pi/*` on the latest release, and the release policy (a merge to `main` changes no version; a daily run publishes `## [Unreleased]` to the `release` branch, and installs use `#release`) — read it before touching deps or committing.
+- **Settings** are omp plugin settings declared in `package.json` `omp.settings` (`enabled`, `targetLanguage`, `lateNotify`), read with `getPluginSettings`.
+- **Translator models** are omp's model role `@omp-thinking-translator`, with ordered fallbacks in `retry.fallbackChains["omp-thinking-translator"]` and per-entry reasoning levels as `:level` selector suffixes. An unbound role means no translation.
+- **Diagnostics** go to `pi.logger` at debug level as `thinking-translator: <event>` records in `~/.omp/logs/omp.<date>.<pid>.log`.
+
+The package is `private` and installed from git (`#release`). `CLAUDE.md` holds the dependency and release policy; read it before touching dependencies, `version` or `CHANGELOG.md`.
 
 ## Architecture & Data Flow
 
-Everything lives in `extensions/thinking-translator.ts` (default export `thinkingTranslator(api: ExtensionAPI)`); closure-scoped state, no classes.
+One translator session exists per main interactive omp session (`ctx.mode === "tui"`, `ctx.agent.kind === "main"`); subagents, print and RPC modes get none. All state belongs to that session object, nothing lives in module scope.
 
 ```mermaid
 flowchart LR
-  H[host thinking events] -->|message_start / thinking_delta / thinking_end / message_end| T[tracked blocks map<br/>partial text + ended flag, cap 32]
-  H -->|registerAssistantThinkingRenderer<br/>context.text = host display text| R[one renderer per tracked block: render() Box + Text title + Markdown body, describe() native section]
-  R --> D[dispatch: split lines → shouldTranslateLine → resolveTrackedLine → canonical raw line]
-  T --> D
-  D -->|uncached canonical line| C[cells Map<br/>key = chain of provider/id@effort + targetLanguage + raw line]
-  C --> S[translateLine: each round tries translatorModels 1→N<br/>resolveModel → streamTranslation (pi-ai streamSimple + effort)<br/>SOURCE_TEXT_BEGIN echo → abort attempt + next model<br/>whole chain failed → backoff 500/2000/6000 ms, restart at 1]
-  S -->|finished line or error → requestRender| R
-  C -->|done but never painted| L[lateQueue → 400 ms window per cell → buildLateRows → ctx.ui.notify]
+  E[message_update thinking_delta with newline / thinking_end / message_end] --> B[tracked block<br/>raw text, ended, view]
+  R[omp thinking renderer call] -->|resolveBlock by display prefix| B
+  R -->|first draw| D
+  E --> D[dispatch: takeFinalLines → shouldTranslateLine → cell key]
+  S[cfgModelRoles / cfgRetryFallbackChains / cfgProseOnlyThinking listeners,<br/>plugin settings at session and agent start] -->|prefix or display change| D
+  D -->|new key| T[translateLine: resolveRoleChain each round,<br/>streamSimple per model, backoff 500/2000/6000 ms]
+  T -->|done / error → requestRender of that block| C[cells]
+  C --> X[box: render ANSI / describe Tern]
+  C -->|lateNotify on, never painted| L[late notifier → ctx.ui.notify]
 ```
 
-Key invariants (deliberate; do not "simplify" them):
-
-- **Host display text is the source of truth.** The renderer translates `context.text` (post-`formatThinkingForDisplay`), not raw event text. `tests/thinking-translator.test.ts:224-239` pins the host rewrite contract by importing the host source from `node_modules`.
-- **Block matching is by content, not `contentIndex`, and yields the canonical raw line.** `matchBlockLine`/`resolveTrackedLine` accept a display line only when it is a *complete* line of a tracked block, tolerating host ellipsis/punctuation rewrites and rejecting a growing block's partial last line, and return the raw line it matched. The raw line — not the display variant — is the cell key and translation source: during the reveal a frame that lacks only the final period is also accepted, and keying by display text would translate that line twice (the first cell never gets painted and leaks into a late notify row). Index-based matching mis-attributes blocks across renderer rebuilds.
-- **Per-line Latin gate.** `shouldTranslateLine` excludes Markdown inline-code spans from language classification, then requires the remaining prose's Latin chars to outnumber its CJK chars. Identifiers, paths, and commands therefore cannot make Chinese prose look foreign.
-- **Cache key** includes the whole model chain (order and each entry's effort) and the language so switching any of them invalidates; the cell map survives message boundaries so history still renders. The cell map holds display state per line, never model choice. The key is `cellKeyPrefix(config) + raw line`; the prefix is computed once when a config is activated (`message_start`, dispatch), and the raw line is recovered from a key by `key.slice(prefix.length)`.
-- **Fallback is stateless.** Every round of every line starts at `translatorModels[0]` and moves on only when that model fails; an accumulated stream containing the internal `SOURCE_TEXT_BEGIN` marker aborts only that model's in-flight request and counts as such a failure. Nothing records which model failed or succeeded (no sticky model, no circuit breaker, no discovery cooldown). The only shared state on this path is `discoveryInFlight`, which joins concurrent requests to a discovery of the same provider that is already running and is deleted when it settles. Do not add memory of failures to "save" requests: it breaks the "always try 1 first" contract.
-- **No placeholders.** Pending/empty rows are omitted; box title shows `done/total`; repaint via `context.requestRender`.
-- **Late rows.** Cells finishing after the scrollback froze (typically at a tool call) go through `ctx.ui.notify`; the queue and coalesced rows retain numeric `thinkingIndex`, and `buildLateRows` resolves every block label in the current UI language when generating the notification. Payloads coalesce only while `chatContentGeneration` is unchanged, and generation advances only on `message_start`/`toolcall_start` — not on thinking deltas.
-- **Native (Tern) surface.** The component also implements `describe(cx)` (Tern Surface Protocol): a collapsible `section` (role `omp.thinking.live` while any cell is open, `omp.thinking` once all settle; when settled it folds by default only while the host setting `expandThinkingBlocks` is off — read through `cfgExpandThinkingBlocks.get(pi.pi.settings)` on every describe, never cached, so the host stays its only source — and a user `toggle` on the root key `""` overrides either way) holding a `head` and an `md` body, the shape the host uses for its own thinking. `render()` and `describe()` share `collect()` (dispatch, cell lookup, `painted`), so a native surface, which never calls `render()`, still triggers translation. The section root object changes only when its live/collapsed state changes; the head label and the `md` body are child components that return their own cached node, so a finished line updates them in place — once the host settles the message, a changed root would make the reconciler delete and re-add every child. `describe` returns `null` (→ host `rows` fallback) when nothing is paintable or the terminal does not list `section`/`md`. The first `describe` call sets `nativeSeen`, which disables the late-notify fallback because a TSP surface has no append-only scrollback. `isNativeRendering()` is deliberately not used: it is module state and reads false when the extension and host resolve different `pi-tui` copies. The settings read goes through `pi.pi.settings` (the host instance injected into the API) for the same reason; the `cfgExpandThinkingBlocks` handle reads by its id path, so it returns the host value even from a duplicate module copy.
-- **One component per tracked block.** The host calls the renderer factory on every display-text change; the factory resolves the block by content (`resolveTrackedBlockKey`) and returns that block's existing component with its context, sources and theme replaced. A new component per call would get a new native id each time, so the reconciler would delete and re-add the whole section on every reveal frame. Text no tracked block claims gets no component unless one of its lines already has a cell.
-- **Per-frame work is proportional to what changed.** A tracked block's renderer keeps state that lives and dies with that block: line-split offsets into the display text (offsets, not substrings, so old display versions are not retained), extended only over the appended part while the new text starts with the old one; and, while its own block is still tracked, one record per complete line (cell key + whether it qualifies), kept only for lines whose first matching tracked block is its own (`ownsFirstMatch`) and recomputed when the key prefix changes. Each frame resolves every line once; the rows join and `setText` happen only when the shown row set changed (`rowsVersion`), and the `render` trace fires only when a cell's state code changed. The factory resolves the block lazily from a line generator (`translationLines`) instead of splitting the whole text first. The `factory` trace record is written only when its signature (indices, line count, tracked block count, ctx/config presence) differs from the previous one.
-- **Each qualifying line streams independently** and is shown only once complete; no concurrency limit or per-block queue.
-- **Config is loaded once per `message_start`**, replaced never cleared. `session_start`/`session_switch`/`session_shutdown` abort the shared `AbortController` and clear all state.
-- **Failure policy.** Bad config JSON, a `translatorModels` that is not an array, an entry without non-empty `provider`/`id`, or an entry `effort` outside `off` + the host's `Effort` levels → warn once per path, force `enabled: false` (an invalid entry is never dropped, since that would shift the fallback order). Empty chain → warn once, nothing dispatched. Per model attempt: registry `find`; absent → `refreshDiscoverableProviders([provider], "online")` (joined while in flight, no cooldown), re-`find`; still absent → warn once per model per session and count it as that model's failure. Auth/stream/empty response, a response containing the prompt's internal `SOURCE_TEXT_BEGIN` marker, or an effort level the model does not support (pi-ai's `requireSupportedEffort` throws before sending) → also that model's failure. Marker detection aborts the per-attempt controller before throwing; the outer session signal remains live so `translateLine` can continue with the next configured model. Streamed text stays local to the attempt and reaches the cell only as a finished line, so a failed attempt leaves nothing to undo. After the whole chain fails, retry it from the first model after 500/2000/6000 ms; only exhaustion becomes an error cell and one deduplicated UI notification.
-- **Effort goes through pi-ai, not around it.** Requests use `streamSimple`, the only pi-ai entry that maps `reasoning`/`disableReasoning` onto each provider's wire field; unset effort sends neither. Which levels a model supports is pi-ai's and the model catalog's call (`model.thinking.efforts`); the extension keeps no copy and only lists them in `status`. `EFFORT_LEVELS` is a ``Record<`${Effort}`, true>`` so a host that adds or drops a level fails the typecheck there.
-
-Host APIs relied on: `api.registerAssistantThinkingRenderer`, `api.registerCommand`, `api.on(...)` lifecycle/message events, `api.pi.settings` (the host `Settings` instance), `ctx.modelRegistry.find`, `ctx.modelRegistry.refreshDiscoverableProviders`, `getApiKeyAndHeaders`, `ctx.ui.notify`, `ctx.cwd`; `streamSimple`/`SimpleStreamOptions`/`Api`/`Model` from `@oh-my-pi/pi-ai` (the `Effort` type is taken from `SimpleStreamOptions["reasoning"]` because extensions cannot resolve `@oh-my-pi/pi-catalog`); `Box`/`Markdown`/`Text`/`node`/`span` from `@oh-my-pi/pi-tui` plus the `Component.describe` / `NativeEventTarget` / `DescribeContext` / `NativeNode` / `NativeUiEvent` types; `getMarkdownTheme` from `@oh-my-pi/pi-coding-agent` and `cfgExpandThinkingBlocks` from `@oh-my-pi/pi-coding-agent/session/settings` (a host-bundled module key). The extension is omp-only (needs the thinking renderer hook); it does not run on plain pi.
+Dispatch is driven by omp events and by a block's first draw, never by rendering; the box only reads cells. The design invariants live as module header comments next to the code that enforces them; read the header of a module before changing it.
 
 ## Key Directories
 
 | Path | Purpose |
 | --- | --- |
-| `extensions/thinking-translator.ts` | The whole extension: state, renderer, dispatch, streaming, config, `/thinking-translator` command, `__testing` exports |
-| `tests/thinking-translator.test.ts` | Unit tests over `__testing` pure helpers + one host contract test |
-| `scripts/repro-thinking-stream.ts` | Deterministic load driver: streams synthetic thinking through the extension with a fake provider and the host's display formatting, then measures GC-heap allocation against a null control and a baseline checkout, or diffs frames/notify/trace against the baseline |
-| `README.md`, `README.zh-CN.md` | User docs in English (default) and Simplified Chinese, same content: install, config keys, pipeline, boundary evidence, limitations |
-| `TODO.md` | Open work: display polish, non-LLM translation providers |
-| `CLAUDE.md` | Dependency and version-bump policy (mandatory) |
-
-No `src/`, no build output; the `.ts` file is loaded by omp as-is.
+| `index.ts` | Entry: session lifecycle (`session_start`/`session_switch`/`session_shutdown`), renderer and `/thinking-translator` registration, message event wiring |
+| `src/session.ts` | Per-session state, event-driven dispatch, settings listeners, one-shot notices, `cellKeyPrefix` |
+| `src/settings.ts` | Plugin settings schema from `package.json`, parsing with per-key defaults |
+| `src/role.ts` | Role binding, chain resolution with one discovery retry, thinking level → `streamSimple` reasoning options |
+| `src/translate.ts` | Per-line request loop over the chain, prompt, `SOURCE_TEXT_BEGIN` guard, output cleanup |
+| `src/lines.ts` | Latin gate, line key normalization, line bound helpers |
+| `src/blocks.ts` | Tracked blocks, display text via omp's `formatThinkingForDisplay`, incremental final lines, block resolution |
+| `src/renderer.ts` | One box component per block: ANSI `render`, Tern `describe` |
+| `src/late-notify.ts` | Late-notification queue and payload building (`lateNotify`) |
+| `src/status.ts` | `/thinking-translator` status report |
+| `tests/thinking-translator.test.ts` | Unit tests and host contract tests |
+| `omomp-shared/` | Byte-identical copies of `oh-my-omp/shared` files declared in `omomp-shared.json` (`i18n.ts`, `biome.base.json`); never edit them |
+| `README.md`, `README.zh-CN.md` | User docs in English and Simplified Chinese, kept in step |
+| `TODO.md` | Open work |
 
 ## Development Commands
 
 ```bash
-bun install                       # bun is the package manager; bun.lock is the only lockfile
-bun run check                     # biome check . && tsc --noEmit — the required gate before commit / install
-bun run format                    # apply Biome formatting and safe fixes
-bun test                          # bun test discovers tests/**/*.test.ts
-bun test tests/thinking-translator.test.ts -t "config paths"   # single test by name substring
+bun install                 # bun is the package manager; bun.lock is the only lockfile
+bun run format              # Biome formatting and safe fixes
+bun run check               # biome check . && tsc --noEmit — required before every commit
+bun test                    # tests/**/*.test.ts
+bun test -t "cell key"      # one test by name substring
 
-# Allocation curve and output identity against another checkout (driver, fake provider, no model calls)
-bun scripts/repro-thinking-stream.ts --rows 200 --baseline /path/to/base/extensions/thinking-translator.ts
-bun scripts/repro-thinking-stream.ts --rows 200 --surface native --baseline /path/to/base/extensions/thinking-translator.ts
-bun scripts/repro-thinking-stream.ts --rows 1000 --shape session --trace-diff --baseline /path/to/base/extensions/thinking-translator.ts
-
-# Run against a live omp without installing
-omp -e /absolute/path/to/extensions/thinking-translator.ts
-
-# Install / refresh the plugin from the release channel (see CLAUDE.md)
+# Live omp without installing; --no-extensions keeps an installed copy of this plugin out
+omp --no-extensions -e /absolute/path/to/omp-thinking-translator/index.ts
 omp plugin install https://github.com/oh-my-omp/omp-thinking-translator#release
-omp plugin list                   # confirm the displayed version matches the published one
 ```
-
-In-app: `/thinking-translator status | init | init --global | init --project`. `init` writes a **disabled** template (`<agentDir>/thinking-translator.json` or `<cwd>/.omp/thinking-translator.json`) and refuses to overwrite.
-
-Config precedence: defaults < global < project, merged per field; `translatorModels` is replaced as a whole. Keys: `enabled` (default `true`), `targetLanguage` (default `"Simplified Chinese"`), `translatorModels: [{ provider, id, effort? }, …]` (ordered fallback chain, default `[]`; at least one entry needed for any translation to happen; `effort` is `off`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`, unset or `null` = model default; `null` for the whole key clears the chain), `trace` (default `true` = sibling of the session file; string = explicit path; `false` = off). The old single-model `translatorModel` key is ignored like other legacy keys.
 
 ## Code Conventions & Common Patterns
 
-- **TypeScript ESM, formatted by Biome** (`biome.json` extends `omomp-shared/biome.base.json`: tabs, line width 140, double quotes, semicolons, trailing commas). Run `bun run format` before committing; `bun run check` fails on unformatted or unsafe lint output.
-- **Closure-based module state**, not classes: `Map`s for cells/blocks, a `lateQueue`, timers (`unref`'d), one shared `AbortController`. Helpers are plain functions defined after the export.
-- **Types over runtime checks inside; parse at the boundary.** Config JSON is read as `unknown` and normalized by `mergeConfig`/`normalizeTranslatorModels`/`parseModelRef`/`parseEffortSetting` into a resolved record. `TranslationProgress` is a discriminated union (`pending | done | error`); payloads are `Readonly`.
-- **Small isolated helpers are test-exported** through the `__testing` object at the bottom of the file (`mergeConfig`, `normalizeTranslatorModels`, `reasoningOptions`, `shouldTranslateLine`, `matchBlockLine`, `resolveTrackedLine`, `resolveTrackedBlockKey`, `ownsFirstMatch`, `splitTranslationLines`, `translationLines`, `cellKeyPrefix`, `cleanTranslation`, `abortOnSourceTextBegin`, `scanForSourceTextBegin`, `buildLateRows`, config path helpers, `DEFAULT_CONFIG`). Most are pure; `abortOnSourceTextBegin` (and `scanForSourceTextBegin`, which calls it on the stream's tail plus the new delta) deliberately owns the one per-attempt side effect being tested — aborting its supplied controller before throwing. New helper logic gets a behavioral test in the same file; do not test extension lifecycle wiring there.
-- **Errors are values or one-shot notifications.** Expected failures (bad config, missing model, exhausted retries) become state (`enabled:false`, `error` cell) plus a deduplicated `ctx.ui.notify`; nothing throws into the host. Credential lookup failures are wrapped in diagnostic `Error`s for retry handling.
-- **Async: fire-and-forget per line**, streaming via `for await` over pi-ai events, redraw once the line finishes or fails, abort-aware (`signal.aborted` checks return early without erroring). Each model attempt combines the session signal with its own `AbortController`, so protocol-marker detection can cancel one provider request without cancelling the line's fallback chain.
-- **Prompting.** The translator prompt treats the source as inert data and forbids answering/summarizing/adding code; `SOURCE_TEXT_BEGIN` / `SOURCE_TEXT_END` delimit that input. Returning `SOURCE_TEXT_BEGIN` is a protocol error that aborts the current model attempt. `cleanTranslation` strips code fences, `<thinking>`/`<text>` wrappers and the "原文保持不变" phrase. Keep the prompt and marker guard aligned if either changes.
-- Comments in source/tests reference user-reported regressions (e.g. short-block, partial-line, coalescing); keep those tests green rather than rewriting them.
-
-## Important Files
-
-- `extensions/thinking-translator.ts` — entry point declared in `package.json` `omp.extensions`.
-  - `~:14-91` types (incl. `Effort`/`EffortSetting`, `TranslationProgress`, `TranslationView`, `BlockRenderer`, `ActiveConfig`, `LineRecord`, `translatorModels` and `trace` in `ResolvedTranslatorConfig`) and `buildLateRows`; `~:92-137` constants (`EFFORT_LEVELS`), `trace()`/`resolveTraceFile`, `discoveryInFlight`; `~:139-500` state, renderer factory, `traceFactory` and `createBlockRenderer` (incremental split state, line records, `render`, `describe`, `handleNativeEvent`) + command registration; `~:501-575` late-row queue/notify/reset; `~:576-692` session/message hooks, `prepareDispatch`, `dispatch`, `cellBody`; `~:694-975` model-chain loop + retry + streaming (`scanForSourceTextBegin`), `cellKeyPrefix`/`activate`, `reasoningOptions`, line splitting (`splitTranslationLines`, `translationLines`), block matching (`matchBlockLine`, `resolveTrackedLine`, `ownsFirstMatch`, `resolveTrackedBlockKey`); `~:977-1220` command, config load/validate/init (incl. `normalizeTranslatorModels`/`parseModelRef`/`parseEffortSetting`), per-request model resolution + discovery, status; `~:1222-1276` prompt and cleanup; `~:1278-` `__testing`.
-- `package.json` — scripts, `omp.extensions` manifest, `@oh-my-pi/*` devDependencies on `latest` (`version` field = installed-plugin identity).
-- `omomp-shared/` — byte-identical copies of `oh-my-omp/shared` files declared in `omomp-shared.json` (`i18n.ts` — the language-resolution helpers the extension and tests import; `biome.base.json`). Never edit them; shared pushes sync PRs and `omomp-check` compares bytes.
-- `tests/thinking-translator.test.ts:5` — direct import of `node_modules/@oh-my-pi/pi-tui/src/chat/thinking-display.ts` (`formatThinkingForDisplay`; it moved there from `pi-coding-agent/src/utils/` by 18.8.7).
-
-## Runtime/Tooling Preferences
-
-- **Runtime target is the user's installed omp** (Bun-based). Tests run under `bun test` using the `node:test`/`node:assert/strict` API. Typecheck uses `tsc` with the `tsconfig.json` compiler options (`moduleResolution bundler`, `module esnext`, `target es2024`, `types bun`); Node built-ins (`fs`, `os`, `path`) are used, no Bun-only APIs in the extension (`scripts/` is the exception — it drives the repro under `bun`).
-- **Package manager: bun** (`bun.lock` is the only lockfile). Do not introduce `pnpm-lock.yaml`/`package-lock.json`.
-- **`@oh-my-pi/*` devDependencies stay on `latest`** (`CLAUDE.md`). If `bun run test` fails after a bump because the host changed `formatThinkingForDisplay`, adapt the extension — never pin back.
-- Workflows: `.github/workflows/omomp-check.yml` calls the shared omomp check workflow (install, `bun run check`, `bun run test`, shared-copy comparison) on push to `main` and every PR; `omomp-release.yml` calls the shared omomp release workflow.
-- Releases follow the omomp release flow. A PR writes its entries under `## [Unreleased]` in `CHANGELOG.md` and changes no version: after `git add`, run `uvx --from lgit-cli lgit`, which commits and appends the user-visible changes to that section. The scheduled run at 02:00 GMT+9 publishes the section to the `release` branch, tag and GitHub Release, and the release is the only writer of `version`.
+- TypeScript ESM formatted by Biome (`biome.json` extends `omomp-shared/biome.base.json`: tabs, width 140, double quotes).
+- Host capabilities come from omp's own exports: settings handles from `@oh-my-pi/pi-coding-agent/session/settings` and `config/model-settings`, `resolveRoleChain`/`roleCandidatePool`, `getPluginSettings`, `formatThinkingForDisplay`, thinking-level helpers from `@oh-my-pi/pi-tui/thinking`. A new host subpath must be confirmed to load in a real omp process, since the omp binary maps only exported paths.
+- Host settings are read through `pi.pi.settings` (the host instance) on every use, never copied.
+- Timers go through `ctx.setTimeout`/`ctx.clearTimer`; one `AbortController` per session cancels every request on dispose.
+- Parse at the boundary: plugin settings arrive as `unknown` values and become `TranslatorSettings`; `TranslationProgress` is a discriminated union handled with exhaustive `switch`.
+- Expected failures become state plus a one-shot `ctx.ui.notify`; nothing throws into the host.
+- User-facing text goes through `tr()` from `omomp-shared/i18n.ts`; the translator prompt is not localized.
 
 ## Testing & QA
 
-- Framework: Bun test runner executing `node:test`/`node:assert/strict` tests; flat tests, no `describe`, no mocks, no shared builders — inline literals only.
-- Coverage: config paths and merge/validation, model chain parsing (order, per-entry effort, whole-chain replacement, rejection of incomplete entries), effort parsing, effort → `streamSimple` option mapping, Latin gating, complete-line/streaming block matching incl. the reveal-frame-minus-period regression, block resolution for component reuse (incl. lazy resolution from the line generator and first-match line ownership), cache key prefix, translation cleanup/splitting (incl. the line generator matching the eager split), `SOURCE_TEXT_BEGIN` per-attempt cancellation (incl. a marker split across stream deltas), late-row payload building, and the host display-rewrite contract. **Not** covered: extension activation, live model calls and the fallback order across them (verify from a real session's trace: `request`/`modelFailed` records per model), the provider wire field an effort level maps to (verify with `PI_REQ_DEBUG=1`, which dumps each request body to `rr-session-N.json` in the cwd), model discovery, ANSI scrollback rewrites, or a real Tern surface. The renderer factory → dispatch → render/`describe` → late notify path is exercised outside `bun run check` by `scripts/repro-thinking-stream.ts` with a fake provider; its `--trace-diff` compares frames, notify payloads and trace records with a baseline checkout.
-- Expectations: any change to a `__testing` helper or the block-matching/late-row rules gets a behavioral test in the same file; lifecycle/renderer changes are verified by running a session-saving omp against the change and reading the per-session trace file (`session_start → message_start → thinking_end → dispatch → request (→ modelFailed → request on the next model) → done → settled → render → painted → lateFlush`), plus observing the box (`done/total` title) and late `notify` rows. Fresh processes are not representative of long-lived agentic sessions: model discovery is re-run at startup and hub PTYs do not commit rows to native scrollback, so a change that "works in `/tmp`" must still be confirmed from a real session's trace. Manual repro steps for the context-exclusion boundary live in `README.md` (Context Boundary section).
-- Known limitations to keep in mind when judging "expected" behavior: folded/invisible blocks never render; in ANSI terminals the host may commit a long message, translation box included, to scrollback once the message ends, and every line that finishes afterwards makes the host rewrite the message from the last row it can still match (one rewrite per late line; count them in a `PI_TUI_WRITE_LOG` capture); late rows fall back to notify when the box is not repainted (not used on a Tern native surface); no backfill on session reopen; identical lines share one translation per model chain+language; thinking lines are sent to the configured translator models, and to later ones in the chain when earlier ones fail (privacy note in README). The native `describe` path has no unit coverage; verify it in a real Tern pane (record with `PI_TUI_TSP_RECORD`): after the first section add, a finished line must show up as `set`/`text`/`splice` on the same ids, never as `del` + `add`.
-- `README.md` and `README.zh-CN.md` are kept in step with the code and with each other (install command is `omp plugin install …#release`, pins match `package.json`); if they disagree, `package.json` and `CLAUDE.md` win and the READMEs are the thing to fix.
+- Bun runs `node:test`/`node:assert/strict` tests: flat tests, inline literals, no mocks.
+- Covered: settings parsing, reasoning options, discovery providers, cell key prefix, the Latin gate, line keys, incremental final lines, block resolution, output cleanup, the split-marker guard, late-row payloads. Two contract tests run omp's own code: final lines taken while a block streams must equal the finished block's display lines under `formatThinkingForDisplay`, and every reveal frame `buildDisplayMessage` produces must resolve to its block.
+- Not covered by unit tests: the session's event wiring, live model calls, discovery, ANSI scrollback and Tern surfaces. Verify those in a real omp PTY session with `--no-extensions -e index.ts` and a `--config` overlay binding the role: send an English prompt with a visible multi-line thinking block, watch the box title reach `done/total`, and read the session's records in `~/.omp/logs/omp.<date>.<pid>.log` (`activate → dispatch → request → done → painted`, `modelFailed` before a fallback). Check the unbound role (one notice, no `request` records) and `enabled: false` (a project `.omp/plugin-overrides.json`) the same way.
+- A failing contract test after a dependency bump means omp changed its thinking display; adapt the plugin, never pin the dependency back.
+
+## Releases
+
+A commit writes its user-visible entries under `## [Unreleased]` in `CHANGELOG.md` and changes no version: after `git add`, run `uvx --from lgit-cli lgit`. The daily release run (`.github/workflows/omomp-release.yml`, 02:00 GMT+9) publishes that section; see `CLAUDE.md`.
