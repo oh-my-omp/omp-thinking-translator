@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- In Tern, a finished translation box that folds (with `expandThinkingBlocks` off, omp's default) now shows its title instead of disappearing.
+- An earlier box no longer empties when the next thinking block starts with the same words ("The user …"); omp draws a new block before the plugin sees its first text, and that frame used to be taken for the earlier block.
+- The `modelFailed` and `translateError` debug records carry the failure under `error`; before, it overwrote the record's message.
+
 ## [1.0.0] - 2026-11-19
 
 ### Breaking Changes

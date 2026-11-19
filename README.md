@@ -64,7 +64,7 @@ Plugin settings are edited in `/settings` → Plugins or with `omp plugin config
 
 omp raises no event when plugin settings change, so the plugin reads them when a session starts and again before every prompt; a change applies from the next prompt. An invalid value falls back to its default, with a warning in the omp log.
 
-**`lateNotify`.** In an ANSI terminal omp commits a message to scrollback, typically at a tool call, and stops redrawing it; a line whose translation finishes after that never appears in its box. With `lateNotify` on, such lines go out as one dim notification row at the current end of the transcript, headed `Thinking translation · Block N`, after a 400 ms debounce. Tern keeps its sections live and never gets these rows.
+**`lateNotify`.** In an ANSI terminal omp stops redrawing a message once it has retired it into scrollback, and that can happen before all of its lines are translated: a slow line can finish after the next prompt has started. Such a line never appears in its box. With `lateNotify` on, such lines go out as one dim notification row at the current end of the transcript, headed `Thinking translation · Block N`, after a 400 ms debounce. Tern keeps its sections live and never gets these rows.
 
 ## UI Language
 

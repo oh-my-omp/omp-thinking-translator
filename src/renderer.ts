@@ -5,9 +5,12 @@
  *
  * - ANSI: `render(width)` draws a Box with a title (`done/total`) and a Markdown body.
  * - Tern Surface Protocol: `describe(cx)` returns a collapsible `section` shaped like omp's own thinking
- *   section. Its root object changes only when its live/collapsed state changes; the label and the body
- *   are child components returning their own cached nodes, so a finished line updates them in place
- *   instead of making the reconciler delete and re-add the whole section.
+ *   section. The label and the body are child components returning their own cached nodes, so a finished
+ *   line updates them in place instead of making the reconciler delete and re-add the whole section.
+ *   The section sits inside a `col` root that changes only with the live/collapsed state. omp settles the
+ *   components of a finished message, and a settled root whose props change gets `set` and then its
+ *   children deleted and re-added; on a section root that loses the head Tern binds before the re-add,
+ *   and a folded section then draws nothing. Under the `col`, the whole section is re-added instead.
  */
 import { getMarkdownTheme } from "@oh-my-pi/pi-coding-agent";
 import type { Component, DescribeContext, NativeEventTarget, NativeNode, NativeUiEvent } from "@oh-my-pi/pi-tui";
@@ -39,6 +42,9 @@ export type BlockRenderer = Readonly<{
 
 /** Finished cells drawn in this frame, and the rows they produce; `rows` changes only when `rowsVersion` does. */
 type BoxView = Readonly<{ completed: number; total: number; rows: readonly string[]; rowsVersion: number }>;
+
+/** Keypath of the section under the box's root `col`; Tern names it in the section's toggle events. */
+const SECTION_KEY = "section";
 
 function cellRow(progress: TranslationOutcome): string {
 	switch (progress.status) {
@@ -182,7 +188,7 @@ export function createBlockRenderer(
 	const settledHead = node("row", { gap: "sm" }, [label], "head");
 	/** The user's own fold in Tern; until then: open while pending, then folded unless `expandThinkingBlocks` is on. */
 	let userCollapsed: boolean | undefined;
-	let sectionNode: NativeNode | undefined;
+	let rootNode: NativeNode | undefined;
 	let sectionSig = "";
 
 	const component: Component & NativeEventTarget = {
@@ -204,18 +210,21 @@ export function createBlockRenderer(
 			const live = view.completed < view.total;
 			const collapsed = userCollapsed ?? (!live && !source.expandThinkingBlocks());
 			const sig = `${live ? "L" : "D"}${collapsed ? "C" : "O"}`;
-			if (!sectionNode || sig !== sectionSig) {
+			if (!rootNode || sig !== sectionSig) {
 				sectionSig = sig;
-				sectionNode = node("section", { role: live ? "omp.thinking.live" : "omp.thinking", collapsible: true, collapsed }, [
-					live ? liveHead : settledHead,
-					content,
-				]);
+				const section = node(
+					"section",
+					{ role: live ? "omp.thinking.live" : "omp.thinking", collapsible: true, collapsed },
+					[live ? liveHead : settledHead, content],
+					SECTION_KEY,
+				);
+				rootNode = node("col", {}, [section]);
 			}
-			return sectionNode;
+			return rootNode;
 		},
 		handleNativeEvent(event: NativeUiEvent): void {
-			// The fold toggle of the section itself (root key "").
-			if (event.type !== "toggle" || event.key !== "") return;
+			// The fold toggle of the section itself.
+			if (event.type !== "toggle" || event.key !== SECTION_KEY) return;
 			userCollapsed = event.collapsed;
 			context.requestRender();
 		},

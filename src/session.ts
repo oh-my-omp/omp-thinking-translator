@@ -248,7 +248,8 @@ export function createSession(pi: ExtensionAPI, initialContext: ExtensionContext
 			if (block.view) {
 				block.view.thinkingIndex = context.thinkingIndex;
 				block.view.requestRender = context.requestRender;
-			} else block.view = { thinkingIndex: context.thinkingIndex, requestRender: context.requestRender };
+				block.view.text = context.text;
+			} else block.view = { thinkingIndex: context.thinkingIndex, requestRender: context.requestRender, text: context.text };
 			// One box per block: omp calls the factory on every display change, and a new component each time
 			// would get a new native id, making the reconciler delete and re-add the whole section per frame.
 			let renderer = renderers.get(block.id);

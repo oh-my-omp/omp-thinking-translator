@@ -12,7 +12,7 @@ import { formatThinkingForDisplay } from "@oh-my-pi/pi-tui/chat/thinking-display
 import { appendLineBound } from "./lines.ts";
 
 /** What omp's latest renderer call for the block reported; updated in place on every call. */
-export type BlockView = { thinkingIndex: number; requestRender: () => void };
+export type BlockView = { thinkingIndex: number; requestRender: () => void; text: string };
 
 export type TrackedBlock = {
 	/** `<message sequence>:<content index>`, unique within the session. */
@@ -102,20 +102,34 @@ type Blocks = Readonly<{ values(): Iterable<TrackedBlock> }>;
  * last line after that frame was built, because a fence arrived after it) is the text without its last
  * line tried, with the same preferences. Undefined for text no watched block produced, such as history
  * from before this session.
+ *
+ * omp draws a new block before the plugin receives the event that starts it (message updates reach
+ * extensions a microtask after the UI), so the first frames of a new block also start an older block's
+ * display text ("The user …"). A drawn block's text never shrinks to a part of what it showed, except to
+ * its whole display text (prose-only mode turned on), so such a frame belongs to no watched block yet.
  */
 export function resolveBlock(blocks: Blocks, text: string, contentIndex: number, proseOnly: boolean): TrackedBlock | undefined {
 	if (!text) return undefined;
-	const exact = newestStartingWith(blocks, text, contentIndex, proseOnly);
+	const exact = newestStartingWith(blocks, text, text, contentIndex, proseOnly);
 	if (exact !== undefined) return exact;
 	const head = text.slice(0, Math.max(0, text.lastIndexOf("\n")));
-	return head === "" ? undefined : newestStartingWith(blocks, head, contentIndex, proseOnly);
+	return head === "" ? undefined : newestStartingWith(blocks, head, text, contentIndex, proseOnly);
 }
 
-function newestStartingWith(blocks: Blocks, text: string, contentIndex: number, proseOnly: boolean): TrackedBlock | undefined {
+function newestStartingWith(
+	blocks: Blocks,
+	prefix: string,
+	text: string,
+	contentIndex: number,
+	proseOnly: boolean,
+): TrackedBlock | undefined {
 	let sameIndex: TrackedBlock | undefined;
 	let any: TrackedBlock | undefined;
 	for (const block of blocks.values()) {
-		if (!displayOf(block, proseOnly).startsWith(text)) continue;
+		const display = displayOf(block, proseOnly);
+		if (!display.startsWith(prefix)) continue;
+		const shown = block.view?.text;
+		if (shown !== undefined && shown.length > text.length && shown.startsWith(text) && text !== display) continue;
 		any = block;
 		if (block.contentIndex === contentIndex) sameIndex = block;
 	}

@@ -185,6 +185,22 @@ test("a block is resolved by content first and by content index only among match
 	assert.equal(resolveBlock([older, newer], "", 0, true), undefined);
 });
 
+test("a new block's first frames are not taken for an older drawn block that starts the same way", () => {
+	const older = trackedBlock("2:0", 0, "The user asks which product is larger.\nSo 19*21 is larger.", true);
+	older.view = { thinkingIndex: 0, requestRender: () => {}, text: "The user asks which product is larger.\nSo 19*21 is larger." };
+	// omp draws the next message's thinking before the plugin has seen its first delta.
+	assert.equal(resolveBlock([older], "The user asks", 0, true), undefined);
+	const newer = trackedBlock("4:0", 0, "The user asks whether 91 is prime.", false);
+	assert.equal(resolveBlock([older, newer], "The user asks", 0, true), newer);
+	// The older block keeps resolving for its own full text, and for a shorter whole display text.
+	assert.equal(resolveBlock([older, newer], "The user asks which product is larger.\nSo 19*21 is larger.", 0, true), older);
+	older.raw = "The user asks which product is larger.";
+	assert.equal(resolveBlock([older, newer], "The user asks which product is larger.", 0, true), older);
+	// A block still revealing keeps resolving as its text grows.
+	newer.view = { thinkingIndex: 0, requestRender: () => {}, text: "The user asks" };
+	assert.equal(resolveBlock([older, newer], "The user asks whether", 0, true), newer);
+});
+
 test("cleanTranslation removes common model wrappers and keeps the text inside", () => {
 	assert.equal(cleanTranslation("```markdown\n你好\n```"), "你好");
 	assert.equal(cleanTranslation("<thinking>\n你好\n</thinking>"), "你好");

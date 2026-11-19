@@ -1,7 +1,8 @@
 /**
  * Fallback for translations that finish after their box stopped being redrawn. In an ANSI terminal omp
- * commits a message to scrollback (typically at a tool call) and no longer calls its components'
- * `render`; a line finishing after that would never appear. Such lines go out as notification rows.
+ * retires a message into scrollback and no longer calls its components' `render`, which can happen while
+ * its lines are still being translated; a line finishing after that would never appear. Such lines go
+ * out as notification rows.
  *
  * Off by default (`lateNotify` setting). Each finished cell waits its own debounce window from the
  * moment it was queued, so a box still being repainted can draw it first; the flush filters by the
