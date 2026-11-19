@@ -4,9 +4,9 @@
 	"extends": ["./omomp-shared/biome.base.json"],
 	"files": {
 		"includes": [
-			"extensions/**/*.ts",
+			"index.ts",
+			"src/**/*.ts",
 			"omomp-shared/**/*.ts",
-			"scripts/**/*.ts",
 			"tests/**/*.ts",
 			"biome.json",
 			"package.json",

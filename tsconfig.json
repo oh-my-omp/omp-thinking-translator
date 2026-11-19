@@ -6,9 +6,10 @@
 		"lib": ["ESNext"],
 		"types": ["bun"],
 		"allowImportingTsExtensions": true,
+		"resolveJsonModule": true,
 		"verbatimModuleSyntax": true,
 		"skipLibCheck": true,
 		"noEmit": true
 	},
-	"include": ["extensions/**/*.ts", "omomp-shared/**/*.ts", "scripts/**/*.ts", "tests/**/*.ts"]
+	"include": ["index.ts", "src/**/*.ts", "omomp-shared/**/*.ts", "tests/**/*.ts"]
 }
