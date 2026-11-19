@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-11-19
+
 ### Breaking Changes
 
 - Translator models now come from the omp model role `@omp-thinking-translator`: bind it in `/model` ("+ New role…"), add fallbacks under `retry.fallbackChains["omp-thinking-translator"]`, and set a reasoning level with a `:level` suffix. The `translatorModels` key and its `effort` entries are no longer read, and while the role is unbound nothing is translated and each session shows one notice.
