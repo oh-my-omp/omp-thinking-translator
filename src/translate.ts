@@ -63,7 +63,8 @@ export async function translateLine(
 				if (signal.aborted) return undefined;
 				const model = modelLabel(candidate.model);
 				const message = `${model}: ${error instanceof Error ? error.message : String(error)}`;
-				deps.log("modelFailed", { source: source.slice(0, 40), round, message });
+				// `error`, not `message`: omp's logger takes a `message` field as the record's own message.
+				deps.log("modelFailed", { source: source.slice(0, 40), round, error: message });
 				failures.push(message);
 				models.push(model);
 			}
@@ -72,7 +73,7 @@ export async function translateLine(
 		if (delay !== undefined && (await deps.sleep(delay, signal))) continue;
 		if (signal.aborted) return undefined;
 		const message = failures.join("; ");
-		deps.log("translateError", { message, rounds: round + 1 });
+		deps.log("translateError", { error: message, rounds: round + 1 });
 		return { status: "error", error: message, models };
 	}
 }
