@@ -59,7 +59,9 @@ export async function readSettings(logger: ExtensionAPI["logger"], cwd: string):
 		if (invalid.length > 0) logger.warn("thinking-translator ignored invalid plugin settings", { keys: invalid });
 		return settings;
 	} catch (error) {
-		logger.warn("thinking-translator could not read its plugin settings", { error: error instanceof Error ? error.message : String(error) });
+		logger.warn("thinking-translator could not read its plugin settings", {
+			error: error instanceof Error ? error.message : String(error),
+		});
 		return DEFAULT_SETTINGS;
 	}
 }
