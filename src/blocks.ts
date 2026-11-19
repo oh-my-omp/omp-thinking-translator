@@ -93,30 +93,29 @@ export function restartScan(block: TrackedBlock): void {
 	block.scanHead = "";
 }
 
+/** A collection that can be walked more than once: the session's block map, or an array. */
+type Blocks = Readonly<{ values(): Iterable<TrackedBlock> }>;
+
 /**
  * The block a renderer's text belongs to: the newest block whose display text starts with it, preferring
- * one at the same content index. When omp has rewritten the text's last line since that frame (a fence
- * arrived after it), the text without that line is tried. Undefined for text no watched block produced,
- * such as history from before this session.
+ * one at the same content index. Only when no block starts with the whole text (omp rewrote the text's
+ * last line after that frame was built, because a fence arrived after it) is the text without its last
+ * line tried, with the same preferences. Undefined for text no watched block produced, such as history
+ * from before this session.
  */
-export function resolveBlock(
-	blocks: Iterable<TrackedBlock>,
-	text: string,
-	contentIndex: number,
-	proseOnly: boolean,
-): TrackedBlock | undefined {
+export function resolveBlock(blocks: Blocks, text: string, contentIndex: number, proseOnly: boolean): TrackedBlock | undefined {
 	if (!text) return undefined;
+	const exact = newestStartingWith(blocks, text, contentIndex, proseOnly);
+	if (exact !== undefined) return exact;
+	const head = text.slice(0, Math.max(0, text.lastIndexOf("\n")));
+	return head === "" ? undefined : newestStartingWith(blocks, head, contentIndex, proseOnly);
+}
+
+function newestStartingWith(blocks: Blocks, text: string, contentIndex: number, proseOnly: boolean): TrackedBlock | undefined {
 	let sameIndex: TrackedBlock | undefined;
 	let any: TrackedBlock | undefined;
-	let head: string | undefined;
-	for (const block of blocks) {
-		const display = displayOf(block, proseOnly);
-		let matches = display.startsWith(text);
-		if (!matches) {
-			head ??= text.slice(0, Math.max(0, text.lastIndexOf("\n")));
-			matches = head !== "" && display.startsWith(head);
-		}
-		if (!matches) continue;
+	for (const block of blocks.values()) {
+		if (!displayOf(block, proseOnly).startsWith(text)) continue;
 		any = block;
 		if (block.contentIndex === contentIndex) sameIndex = block;
 	}

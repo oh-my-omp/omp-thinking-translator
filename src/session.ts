@@ -232,7 +232,7 @@ export function createSession(pi: ExtensionAPI, initialContext: ExtensionContext
 
 	return {
 		render(context, theme) {
-			const block = resolveBlock(blocks.values(), context.text, context.contentIndex, proseOnly());
+			const block = resolveBlock(blocks, context.text, context.contentIndex, proseOnly());
 			if (block === undefined) {
 				// History, or a frame no watched block produced: a one-off box, only when some line already has a translation.
 				const current = prefix;
