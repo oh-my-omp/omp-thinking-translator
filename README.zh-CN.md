@@ -41,7 +41,7 @@ retry:
 
 - **顺序。** 每一行都先试角色绑定的模型，再按顺序试回退模型，只有当前模型失败才换下一个。失败包括：不在模型注册表里、没有凭据、流错误、返回空文本，或回显了提示词里的输入标记。各行之间不记任何状态。整条链都失败时，分别在 0.5 秒、2 秒、6 秒后从头再试，之后这一行才显示失败行。
 - **推理强度。** `:level` 后缀（`:off`、`:minimal` … `:max`）决定发给该模型的翻译请求用什么推理强度。不写后缀时用 pi-ai 对该模型 API 的默认值，有些 API 的默认值是“关闭推理”；要求必须推理的端点会因此拒绝每一次请求（`Reasoning is mandatory for this endpoint`），这类模型要写明强度。每次请求的输出上限是 1024–8192 token，按行长缩放；推理模型若把额度花在隐藏推理上就会返回空文本，所以翻译用低强度合适。
-- **模型发现。** 代理发现型服务方的模型从 omp 的注册表里掉出去时，插件请 omp 重新发现这个服务方，再解析一次模型链。
+- **模型发现。** 代理发现型服务方的模型从 omp 的注册表里掉出去时，插件请 omp 重新发现这个服务方，再解析一次模型链。omp 只重新发现启动时加载过的服务方，所以 omp 运行期间才加进 `models.yml` 的服务方，要等 omp 重启后才能用。
 - **改动立即生效。** 新的绑定或回退链在正在运行的会话里立刻生效，屏幕上的块按新的链重新翻译。旧绑定下的译文会保留，切回去时直接复用。
 
 `/thinking-translator` 显示插件设置、角色绑定、回退链，以及模型链此刻解析到的模型和各自的推理强度。
@@ -87,8 +87,8 @@ retry:
 1. 写一个用完即弃的扩展，注册 `pi.on("before_provider_request", …)` 和 `pi.on("session_before_compact", …)`，把 payload 和 `event.preparation` 的 `JSON.stringify` 分别追加到两个文件，两个处理器都返回 `undefined`。
 2. 绑定好角色，在临时目录里启动 `omp -e /path/to/omp-thinking-translator/index.ts -e /path/to/observer.ts`。
 3. 发送一个会产生多行 thinking 的英文 prompt，等翻译框标题里的 `done/total` 两个数相等。复制两段既不在 prompt 里、也不在 thinking 里的有辨识度的译文片段。
-4. 再发一轮，在最新的 `before_provider_request` payload 里搜索这两段片段和翻译框标题。应当一次都没有，助手 thinking 应与会话文件里存储的一致。
-5. 继续对话直到 `/compact` 有可摘要的消息，执行它，用同样方法搜索记录下的 preparation 和存储的摘要。应当一次都没有。
+4. 再发一轮，在最新的 `before_provider_request` payload 里搜索这两段片段和翻译框标题。应当一次都没有；payload 里带有之前的 thinking 时（不是每种 API 都会重发），它应与会话文件里存储的一致。
+5. 继续对话直到 `/compact` 有可摘要的消息，执行它，用同样方法搜索记录下的 preparation 和存储的摘要。应当一次都没有。在 omp 启动时读取的配置里把 `compaction.keepRecentTokens` 设得很低，两轮就够。
 6. 搜索会话文件的每个内容部分。应当一次都没有。
 
 不在这个边界内的：

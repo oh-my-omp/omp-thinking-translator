@@ -41,7 +41,7 @@ retry:
 
 - **Order.** Every line tries the role's model first and the fallbacks in order, moving on only when a model fails: missing from the registry, no credentials, a stream error, an empty answer, or an answer that echoes the prompt's input marker. Nothing is remembered between lines. When every model failed, the whole chain is tried again after 0.5 s, 2 s and 6 s before the line shows its failure row.
 - **Reasoning level.** The `:level` suffix (`:off`, `:minimal` … `:max`) sets the reasoning effort of the translation requests to that model. Without a suffix, pi-ai's default for the model's API applies, which on some APIs means "reasoning disabled"; an endpoint that requires reasoning then rejects every request (`Reasoning is mandatory for this endpoint`), so give such a model an explicit level. Each request allows 1024–8192 output tokens, scaled to the line's length; a reasoning model that spends them on hidden reasoning returns empty text, so a low level suits translation.
-- **Discovery.** When a model of a proxy-discovered provider has dropped out of omp's registry, the plugin asks omp to discover that provider again and resolves the chain once more.
+- **Discovery.** When a model of a proxy-discovered provider has dropped out of omp's registry, the plugin asks omp to discover that provider again and resolves the chain once more. omp only rediscovers providers it loaded at startup, so a provider added to `models.yml` while omp runs stays unavailable until omp restarts.
 - **Changes apply at once.** A new binding or fallback chain takes effect in the running session; the blocks on screen are translated again under it. Translations made under the previous binding are kept, so switching back reuses them.
 
 `/thinking-translator` shows the plugin settings, the binding, the fallbacks and the models the chain resolves to right now, each with its reasoning level.
@@ -87,8 +87,8 @@ To check this yourself:
 1. Write a throwaway extension that registers `pi.on("before_provider_request", …)` and `pi.on("session_before_compact", …)`, appends `JSON.stringify` of the payload and of `event.preparation` to two files, and returns `undefined` from both.
 2. Start `omp -e /path/to/omp-thinking-translator/index.ts -e /path/to/observer.ts` in a scratch directory with the role bound.
 3. Send an English prompt that produces several thinking lines and wait until the box reads `done/total` with both numbers equal. Copy two distinctive fragments of the translation that occur in neither the prompt nor the thinking.
-4. Send another turn and search the newest `before_provider_request` payload for those fragments and the box title. Expect none, and expect the assistant thinking to match what the session file stores.
-5. Add turns until `/compact` has messages to summarize, run it, and search the recorded preparation and the stored summary the same way. Expect none.
+4. Send another turn and search the newest `before_provider_request` payload for those fragments and the box title. Expect none; where the payload carries the earlier thinking (not every API resends it), expect it to match what the session file stores.
+5. Add turns until `/compact` has messages to summarize, run it, and search the recorded preparation and the stored summary the same way. Expect none. A low `compaction.keepRecentTokens` in the config omp starts with gets there in two turns.
 6. Search every content part of the session file. Expect none.
 
 Outside this boundary:
