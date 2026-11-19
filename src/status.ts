@@ -43,8 +43,8 @@ export async function showStatus(pi: ExtensionAPI, ctx: ExtensionCommandContext)
 	}
 	lines.push(
 		tr(
-			'diagnostics: omp log records "thinking-translator: …" at debug level (OMP_LOG_LEVEL=debug)',
-			'诊断：omp 日志里 debug 级别的 "thinking-translator: …" 记录（OMP_LOG_LEVEL=debug）',
+			'diagnostics: debug records "thinking-translator: …" in ~/.omp/logs/omp.<date>.<pid>.log',
+			'诊断：~/.omp/logs/omp.<日期>.<pid>.log 里 debug 级别的 "thinking-translator: …" 记录',
 		),
 	);
 	ctx.ui.notify(lines.join("\n"), "info");

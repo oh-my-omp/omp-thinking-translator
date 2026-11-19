@@ -10,7 +10,11 @@ import { tr } from "../omomp-shared/i18n.ts";
 import { type Candidate, modelLabel } from "./role.ts";
 
 /** A line's translation state; pending lines are counted in the box title but take no row. */
-export type TranslationProgress = { status: "pending" } | { status: "done"; translation: string } | { status: "error"; error: string };
+export type TranslationProgress =
+	| { status: "pending" }
+	| { status: "done"; translation: string }
+	/** `models`: the chain's models that failed in the last round, in order; empty when the chain had none. */
+	| { status: "error"; error: string; models: readonly string[] };
 export type TranslationOutcome = Exclude<TranslationProgress, { status: "pending" }>;
 /**
  * One shared state per line key; equal lines share one request. `painted` records whether a box drew the
@@ -45,6 +49,7 @@ export async function translateLine(
 ): Promise<TranslationOutcome | undefined> {
 	for (let round = 0; ; round++) {
 		const failures: string[] = [];
+		const models: string[] = [];
 		const chain = await deps.resolveChain();
 		if (signal.aborted) return undefined;
 		if (chain.length === 0) failures.push(tr("no model of the translator role is available", "翻译角色没有可用的模型"));
@@ -56,9 +61,11 @@ export async function translateLine(
 				return { status: "done", translation };
 			} catch (error) {
 				if (signal.aborted) return undefined;
-				const message = `${modelLabel(candidate.model)}: ${error instanceof Error ? error.message : String(error)}`;
+				const model = modelLabel(candidate.model);
+				const message = `${model}: ${error instanceof Error ? error.message : String(error)}`;
 				deps.log("modelFailed", { source: source.slice(0, 40), round, message });
 				failures.push(message);
+				models.push(model);
 			}
 		}
 		const delay = RETRY_DELAYS_MS[round];
@@ -66,7 +73,7 @@ export async function translateLine(
 		if (signal.aborted) return undefined;
 		const message = failures.join("; ");
 		deps.log("translateError", { message, rounds: round + 1 });
-		return { status: "error", error: message };
+		return { status: "error", error: message, models };
 	}
 }
 

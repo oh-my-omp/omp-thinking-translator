@@ -34,7 +34,9 @@ export type Candidate = Readonly<{ model: Model<Api>; reasoning: ReasoningOption
 /**
  * The stream options for a selector's thinking level: `:off` disables reasoning, a concrete effort is
  * sent as is (omp already clamped it to the model while resolving the selector), and no suffix or
- * `auto`/`inherit` sends neither field, leaving the provider default.
+ * `auto`/`inherit` sends neither field, so pi-ai applies its own default for the model's API. That
+ * default can be "thinking disabled" (pi-ai's Anthropic messages request sends `thinking: disabled`),
+ * which an endpoint that requires reasoning rejects; such a model needs an explicit suffix.
  */
 export function reasoningOptions(level: ConfiguredThinkingLevel | undefined): ReasoningOptions {
 	const concrete = concreteThinkingLevel(level);

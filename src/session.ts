@@ -161,7 +161,12 @@ export function createSession(pi: ExtensionAPI, initialContext: ExtensionContext
 						if (settings?.lateNotify && !nativeSeen && !cell.painted) late.enqueue(view.thinkingIndex, cell, outcome.translation);
 						return;
 					case "error":
-						notifyOnce(`failure:${outcome.error}`, tr("Thinking translation failed: ", "思考翻译失败：") + outcome.error, "warning");
+						// Keyed by the failing models, not the message: provider errors carry request ids, so every line would differ.
+						notifyOnce(
+							`failure:${outcome.models.join(",")}`,
+							tr("Thinking translation failed: ", "思考翻译失败：") + outcome.error,
+							"warning",
+						);
 						return;
 				}
 			});
