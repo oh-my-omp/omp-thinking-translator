@@ -14,14 +14,12 @@ import { cellKeyPrefix } from "../src/session.ts";
 import { DEFAULT_SETTINGS, parseSettings } from "../src/settings.ts";
 import { cleanTranslation, scanForSourceTextBegin } from "../src/translate.ts";
 
-// Assertions on human-facing text below use English regardless of the developer's locale.
 process.env[LANGUAGE_ENV] = "en";
 
 const blockLabel = (index: number): string => tr(`Block ${index}`, `第 ${index} 块`);
 const lateHeader = (labels: readonly string[]): string =>
 	tr(`Thinking translation · ${labels.join(", ")}`, `思考翻译 · ${labels.join("、")}`);
 
-/** Thinking that omp rewrites for display: folded fences, an ellipsis eating a final period, empty comment lines. */
 const REWRITTEN_SAMPLES = [
 	'Let me check the config file first.\n```json\n{"a": 1}\n```\nThen I will run the tests.',
 	"The helper currently looks like this:\n```ts\nfunction parse(input: string) {\n  return input.trim();\n}\n```\nSo trailing whitespace is dropped.",
@@ -30,7 +28,6 @@ const REWRITTEN_SAMPLES = [
 	"Plain line one.\nPlain line two.\n\nPlain line three after a blank line.",
 ];
 
-/** The raw text as the stream delivers it: every prefix ending at a chunk boundary of `size` characters. */
 function streamed(raw: string, size: number): string[] {
 	const prefixes: string[] = [];
 	for (let end = size; end < raw.length; end += size) prefixes.push(raw.slice(0, end));
@@ -77,7 +74,6 @@ test("the cell key prefix separates binding, fallback order and level, and targe
 });
 
 test("shouldTranslateLine accepts foreign lines of any length and rejects the rest", () => {
-	// A short thinking block right before a tool call must still be translated.
 	assert.equal(shouldTranslateLine("Let me check the session_init entry in the child, it might contain agent info."), true);
 	assert.equal(shouldTranslateLine("OK."), true);
 	assert.equal(shouldTranslateLine("abcde你好"), true);
@@ -108,11 +104,6 @@ test("a line, its reveal frame without the final period, and its fence-folded fo
 	assert.notEqual(lineKey("Let me check the config"), lineKey("Let me check the config file first."));
 });
 
-/**
- * Dispatch runs on the raw text as it streams. Every line it hands out must be a final display line of the
- * finished block (no partial line ever gets a cell), and by the end every display line must have been handed
- * out, each under the key the box looks it up by.
- */
 test("final lines taken while a block streams are exactly the finished block's display lines", () => {
 	for (const raw of REWRITTEN_SAMPLES)
 		for (const size of [1, 7, 40]) {
@@ -138,12 +129,6 @@ test("a growing block's last line waits for a newline or the block's end", () =>
 	assert.deepEqual(takeFinalLines(block, true), ["First line is done.", "Second line is still growing."]);
 });
 
-/**
- * Contract with omp: the text a thinking renderer receives is omp's reveal of its formatted display text
- * (`buildDisplayMessage`, trimmed the way `resolveThinkingDisplay` does). Every frame of the reveal must
- * resolve to the block that produced it, also when the block's raw text moved one chunk further than the
- * frame (the frame was built before the latest delta).
- */
 test("every reveal frame omp draws resolves to the block that produced it", () => {
 	for (const raw of REWRITTEN_SAMPLES)
 		for (const proseOnly of [true, false]) {
@@ -188,15 +173,12 @@ test("a block is resolved by content first and by content index only among match
 test("a new block's first frames are not taken for an older drawn block that starts the same way", () => {
 	const older = trackedBlock("2:0", 0, "The user asks which product is larger.\nSo 19*21 is larger.", true);
 	older.view = { thinkingIndex: 0, requestRender: () => {}, text: "The user asks which product is larger.\nSo 19*21 is larger." };
-	// omp draws the next message's thinking before the plugin has seen its first delta.
 	assert.equal(resolveBlock([older], "The user asks", 0, true), undefined);
 	const newer = trackedBlock("4:0", 0, "The user asks whether 91 is prime.", false);
 	assert.equal(resolveBlock([older, newer], "The user asks", 0, true), newer);
-	// The older block keeps resolving for its own full text, and for a shorter whole display text.
 	assert.equal(resolveBlock([older, newer], "The user asks which product is larger.\nSo 19*21 is larger.", 0, true), older);
 	older.raw = "The user asks which product is larger.";
 	assert.equal(resolveBlock([older, newer], "The user asks which product is larger.", 0, true), older);
-	// A block still revealing keeps resolving as its text grows.
 	newer.view = { thinkingIndex: 0, requestRender: () => {}, text: "The user asks" };
 	assert.equal(resolveBlock([older, newer], "The user asks whether", 0, true), newer);
 });

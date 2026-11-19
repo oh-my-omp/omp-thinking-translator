@@ -27,7 +27,7 @@ flowchart LR
   C -->|lateNotify on, never painted| L[late notifier → ctx.ui.notify]
 ```
 
-Dispatch is driven by omp events and by a block's first draw, never by rendering; the box only reads cells. The design invariants live as module header comments next to the code that enforces them; read the header of a module before changing it.
+Dispatch is driven by omp events and by a block's first draw, never by rendering; the box only reads cells.
 
 ## Key Directories
 

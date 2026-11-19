@@ -1,16 +1,8 @@
 /**
- * The translation box under a thinking block. The box only reads: dispatch happens in the session when
- * the block's lines become final, so drawing never starts a request. It looks up every line of the text
- * omp hands the renderer, and shows the lines whose cells finished.
- *
- * - ANSI: `render(width)` draws a Box with a title (`done/total`) and a Markdown body.
- * - Tern Surface Protocol: `describe(cx)` returns a collapsible `section` shaped like omp's own thinking
- *   section. The label and the body are child components returning their own cached nodes, so a finished
- *   line updates them in place instead of making the reconciler delete and re-add the whole section.
- *   The section sits inside a `col` root that changes only with the live/collapsed state. omp settles the
+ * omp settles the
  *   components of a finished message, and a settled root whose props change gets `set` and then its
  *   children deleted and re-added; on a section root that loses the head Tern binds before the re-add,
- *   and a folded section then draws nothing. Under the `col`, the whole section is re-added instead.
+ *   and a folded section then draws nothing.
  */
 import { getMarkdownTheme } from "@oh-my-pi/pi-coding-agent";
 import type { Component, DescribeContext, NativeEventTarget, NativeNode, NativeUiEvent } from "@oh-my-pi/pi-tui";
@@ -21,29 +13,21 @@ import { tr } from "../omomp-shared/i18n.ts";
 import { appendCompleteLineBounds, appendLineBound, lineKey } from "./lines.ts";
 import type { TranslationCell, TranslationOutcome } from "./translate.ts";
 
-/** What a box reads from its session; every call reflects the session's current state. */
 export type CellSource = Readonly<{
-	/** The cell key prefix; undefined while translation is off (disabled, or the role is unbound). */
 	prefix(): string | undefined;
 	cell(key: string): TranslationCell | undefined;
-	/** Called the first time a box draws a finished cell. */
 	painted(cell: TranslationCell, thinkingIndex: number): void;
-	/** Called on every `describe`: a Tern surface is drawing, which has no append-only scrollback. */
 	nativeSeen(): void;
-	/** omp's `expandThinkingBlocks` setting, read on every call. */
 	expandThinkingBlocks(): boolean;
 }>;
 
 export type BlockRenderer = Readonly<{
 	component: Component & NativeEventTarget;
-	/** Hand the box the context and theme of omp's latest call for its block. */
 	update(context: AssistantThinkingRenderContext, theme: Theme): void;
 }>;
 
-/** Finished cells drawn in this frame, and the rows they produce; `rows` changes only when `rowsVersion` does. */
 type BoxView = Readonly<{ completed: number; total: number; rows: readonly string[]; rowsVersion: number }>;
 
-/** Keypath of the section under the box's root `col`; Tern names it in the section's toggle events. */
 const SECTION_KEY = "section";
 
 function cellRow(progress: TranslationOutcome): string {
@@ -63,15 +47,10 @@ export function createBlockRenderer(
 	let context = initialContext;
 	let theme = initialTheme;
 
-	// Line splitting state: offsets into the text, extended over the appended part while the new text starts
-	// with the old one. Offsets rather than substrings, so old versions of the text are not retained.
 	let text = "";
-	/** Offset after the last newline of `text`; lines before it are complete. */
 	let scanned = 0;
-	/** Two entries per line: trimmed start and end. */
 	const bounds: number[] = [];
 	let completeLines = 0;
-	/** Cell key per complete line under `keysPrefix`; computed once per line. */
 	const keys: string[] = [];
 	let keysPrefix: string | undefined;
 	const lineAt = (index: number): string => text.slice(bounds[index * 2], bounds[index * 2 + 1]);
@@ -92,11 +71,9 @@ export function createBlockRenderer(
 
 	const frameCells: TranslationCell[] = [];
 	const frameRows: string[] = [];
-	/** Rows of the last frame that had any; rewritten, and `rowsVersion` bumped, only when they change. */
 	const shownRows: string[] = [];
 	let rowsVersion = 0;
 
-	/** Shared by `render` and `describe`: look up cells, mark finished ones painted; undefined when nothing is drawable. */
 	const collect = (): BoxView | undefined => {
 		const prefix = source.prefix();
 		if (prefix === undefined) return undefined;
@@ -107,7 +84,6 @@ export function createBlockRenderer(
 		frameCells.length = 0;
 		const lineCount = bounds.length / 2;
 		for (let index = 0; index < lineCount; index++) {
-			// The last line may still be revealing; its key is computed per frame and never cached.
 			let key = index < completeLines ? keys[index] : undefined;
 			if (key === undefined) {
 				key = prefix + lineKey(lineAt(index));
@@ -125,7 +101,6 @@ export function createBlockRenderer(
 			frameRows.push(cellRow(cell.progress));
 			if (cell.progress.status === "done" && !cell.painted) source.painted(cell, context.thinkingIndex);
 		}
-		// Pending lines take no room; they only count in the title.
 		if (frameRows.length === 0) return undefined;
 		if (frameRows.length !== shownRows.length || frameRows.some((row, index) => row !== shownRows[index])) {
 			for (let index = 0; index < frameRows.length; index++) shownRows[index] = frameRows[index]!;
@@ -141,7 +116,6 @@ export function createBlockRenderer(
 			`思考翻译 · 块 ${context.thinkingIndex + 1} · ${view.completed}/${view.total}`,
 		);
 
-	// ANSI surface.
 	const box = new Box(1, 1, (line) => theme.bg("customMessageBg", line));
 	const title = new Text("", 0, 0);
 	const body = new Markdown("", 0, 0, getMarkdownTheme());
@@ -149,7 +123,6 @@ export function createBlockRenderer(
 	box.addChild(body);
 	let bodyVersion = -1;
 
-	// Tern surface: label and body are child components with their own cached nodes.
 	let view: BoxView | undefined;
 	let labelText = "";
 	let labelNode: NativeNode | undefined;
@@ -183,10 +156,8 @@ export function createBlockRenderer(
 			return contentNode;
 		},
 	};
-	// Like omp's thinking head: a starburst while lines are pending, only the label once all settled.
 	const liveHead = node("row", { gap: "sm" }, [node("spinner", { style: "starburst", role: "omp.thinking.spin" }), label], "head");
 	const settledHead = node("row", { gap: "sm" }, [label], "head");
-	/** The user's own fold in Tern; until then: open while pending, then folded unless `expandThinkingBlocks` is on. */
 	let userCollapsed: boolean | undefined;
 	let rootNode: NativeNode | undefined;
 	let sectionSig = "";
@@ -223,7 +194,6 @@ export function createBlockRenderer(
 			return rootNode;
 		},
 		handleNativeEvent(event: NativeUiEvent): void {
-			// The fold toggle of the section itself.
 			if (event.type !== "toggle" || event.key !== SECTION_KEY) return;
 			userCollapsed = event.collapsed;
 			context.requestRender();

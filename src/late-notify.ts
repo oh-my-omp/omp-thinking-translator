@@ -1,14 +1,3 @@
-/**
- * Fallback for translations that finish after their box stopped being redrawn. In an ANSI terminal omp
- * retires a message into scrollback and no longer calls its components' `render`, which can happen while
- * its lines are still being translated; a line finishing after that would never appear. Such lines go
- * out as notification rows.
- *
- * Off by default (`lateNotify` setting). Each finished cell waits its own debounce window from the
- * moment it was queued, so a box still being repainted can draw it first; the flush filters by the
- * cells' current `painted` bit. Rows coalesce into the previous payload while no new chat child was
- * mounted since it (see `noteMounted`), because omp merges consecutive notifications into one row.
- */
 import { tr } from "../omomp-shared/i18n.ts";
 import type { TranslationCell } from "./translate.ts";
 
@@ -18,7 +7,6 @@ export type LateRowsPayload = Readonly<{ text: string; rows: readonly LatePayloa
 
 const DEBOUNCE_MS = 400;
 
-/** The notification for the queued rows no box drew, merged after the previous payload while coalescing; labels in the current UI language. */
 export function buildLateRows(
 	queued: readonly LateRowCandidate[],
 	previousPayload: LateRowsPayload | undefined,
@@ -46,11 +34,8 @@ export type LateNotifierDeps = Readonly<{
 }>;
 
 export type LateNotifier = Readonly<{
-	/** Queue a finished, not yet painted cell. */
 	enqueue(thinkingIndex: number, cell: TranslationCell, text: string): void;
-	/** omp mounted a new chat child (`message_start`, `toolcall_start`); the next payload cannot merge into the last. */
 	noteMounted(): void;
-	/** Drop the queue, the pending flush and the last payload. */
 	reset(): void;
 }>;
 

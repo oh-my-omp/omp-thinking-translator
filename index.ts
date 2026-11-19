@@ -1,8 +1,3 @@
-/**
- * omp-thinking-translator: a translated copy of each visible assistant thinking line, drawn under its
- * thinking block. Display-only and memory-only: nothing is written to the session, model requests or
- * compaction input. Only main interactive sessions translate; subagents, print and RPC modes do nothing.
- */
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { tr } from "./omomp-shared/i18n.ts";
 import { createSession, type TranslatorSession } from "./src/session.ts";

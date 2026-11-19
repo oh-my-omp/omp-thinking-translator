@@ -1,18 +1,6 @@
 /**
- * Everything one main interactive session owns, from `session_start` to its shutdown or switch:
- * the cells, the watched blocks, their boxes, in-flight requests and the settings subscriptions.
  * Nothing lives in module scope: omp evaluates the module once and binds the factory again for every
  * subagent session, so module state would be shared across sessions.
- *
- * Dispatch is driven by events, never by drawing:
- *
- * - a thinking delta that completes a line, `thinking_end` and `message_end` dispatch the block's new
- *   final lines, once omp has drawn the block at least once (hidden thinking is never sent anywhere);
- * - the first draw of a block dispatches the lines it already has;
- * - a change of the role binding, the fallback chains, the plugin settings or the prose-only mode
- *   recomputes the cell key prefix (or the display text) and dispatches every drawn block again.
- *
- * A finished line updates its cell and asks only its own block's box to redraw.
  */
 import type { ExtensionAPI, ExtensionContext, MessageEndEvent, MessageUpdateEvent } from "@oh-my-pi/pi-coding-agent";
 import { cfgModelRoles } from "@oh-my-pi/pi-coding-agent/config/model-settings";
@@ -29,7 +17,6 @@ import { type RoleBinding, resolveChain, roleBinding } from "./role.ts";
 import { readSettings, sameSettings, type TranslatorSettings } from "./settings.ts";
 import { type TranslateDeps, type TranslationCell, translateLine } from "./translate.ts";
 
-/** Older blocks were committed long ago and their translations stay in the cell map. */
 const MAX_TRACKED_BLOCKS = 32;
 
 export type TranslatorSession = Readonly<{
@@ -41,11 +28,6 @@ export type TranslatorSession = Readonly<{
 	dispose(): void;
 }>;
 
-/**
- * Cell keys are this prefix plus the line key. The prefix holds the whole binding (primary, fallbacks in
- * order, their `:level` suffixes) and the target language, so changing any of them never reuses a
- * translation made under the old ones; the cells themselves survive, so switching back finds them.
- */
 export function cellKeyPrefix(binding: RoleBinding, targetLanguage: string): string {
 	return `${binding.primary}\u0000${binding.fallbacks.join("\u0001")}\u0000${targetLanguage}\u0000`;
 }
@@ -56,18 +38,14 @@ export function createSession(pi: ExtensionAPI, initialContext: ExtensionContext
 	let ctx = initialContext;
 	let disposed = false;
 	const controller = new AbortController();
-	/** Undefined until the first read finishes; nothing is dispatched before it. */
 	let settings: TranslatorSettings | undefined;
-	/** Undefined while translation is off: settings unread or disabled, or the role unbound. */
 	let prefix: string | undefined;
 	const cells = new Map<string, TranslationCell>();
 	const blocks = new Map<string, TrackedBlock>();
 	const renderers = new Map<string, BlockRenderer>();
 	const discoveries = new Map<string, Promise<void>>();
-	/** One-shot notifications already shown in this session. */
 	const notified = new Set<string>();
 	let messageSeq = 0;
-	/** A Tern surface called `describe`: no append-only scrollback, so no late notifications. */
 	let nativeSeen = false;
 
 	const notifyOnce = (key: string, message: string, level: "info" | "warning"): void => {
@@ -107,7 +85,6 @@ export function createSession(pi: ExtensionAPI, initialContext: ExtensionContext
 		log,
 	};
 
-	/** Discovery of the role's providers, joined per provider while one is running; its failures are omp's to record. */
 	async function discover(providers: readonly string[]): Promise<void> {
 		await Promise.all(
 			providers.map((provider) => {
@@ -161,7 +138,6 @@ export function createSession(pi: ExtensionAPI, initialContext: ExtensionContext
 						if (settings?.lateNotify && !nativeSeen && !cell.painted) late.enqueue(view.thinkingIndex, cell, outcome.translation);
 						return;
 					case "error":
-						// Keyed by the failing models, not the message: provider errors carry request ids, so every line would differ.
 						notifyOnce(
 							`failure:${outcome.models.join(",")}`,
 							tr("Thinking translation failed: ", "思考翻译失败：") + outcome.error,
@@ -174,7 +150,6 @@ export function createSession(pi: ExtensionAPI, initialContext: ExtensionContext
 		if (started > 0) log("dispatch", { block: block.id, started });
 	}
 
-	/** Re-dispatch every drawn block from its first line, after the prefix or the display text changed. */
 	function redispatchAll(): void {
 		for (const block of blocks.values()) {
 			restartScan(block);
@@ -239,7 +214,6 @@ export function createSession(pi: ExtensionAPI, initialContext: ExtensionContext
 		render(context, theme) {
 			const block = resolveBlock(blocks, context.text, context.contentIndex, proseOnly());
 			if (block === undefined) {
-				// History, or a frame no watched block produced: a one-off box, only when some line already has a translation.
 				const current = prefix;
 				if (current === undefined || !latinLines(context.text).some((line) => cells.has(current + lineKey(line)))) return undefined;
 				return createBlockRenderer(source, context, theme).component;
@@ -258,7 +232,6 @@ export function createSession(pi: ExtensionAPI, initialContext: ExtensionContext
 				renderer = createBlockRenderer(source, context, theme);
 				renderers.set(block.id, renderer);
 			}
-			// Out of the draw: the first draw is the event that makes the block's lines eligible.
 			if (firstDraw) queueMicrotask(() => dispatch(block));
 			return renderer.component;
 		},
@@ -287,7 +260,6 @@ export function createSession(pi: ExtensionAPI, initialContext: ExtensionContext
 					const content = update.partial.content[update.contentIndex];
 					if (content?.type !== "thinking") return;
 					const block = upsert(update.contentIndex, content.thinking, false);
-					// Only a delta that completes a line can add a final line.
 					if (update.delta.includes("\n")) dispatch(block);
 					return;
 				}
@@ -300,7 +272,6 @@ export function createSession(pi: ExtensionAPI, initialContext: ExtensionContext
 		},
 		messageEnd(event, next) {
 			ctx = next;
-			// Also the only chance for a block whose provider sent no thinking events, or no thinking_end.
 			if (event.message.role === "assistant")
 				for (const [contentIndex, content] of event.message.content.entries())
 					if (content.type === "thinking") dispatch(upsert(contentIndex, content.thinking, true));

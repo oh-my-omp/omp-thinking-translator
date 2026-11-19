@@ -1,4 +1,3 @@
-/** `/thinking-translator`: what the plugin would do right now, read from omp's own settings and registry. */
 import type { ExtensionAPI, ExtensionCommandContext } from "@oh-my-pi/pi-coding-agent";
 import { tr } from "../omomp-shared/i18n.ts";
 import { modelLabel, ROLE, resolveChain, roleBinding } from "./role.ts";
