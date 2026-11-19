@@ -81,4 +81,6 @@ omp plugin install https://github.com/oh-my-omp/omp-thinking-translator#release
 
 ## Releases
 
+`.github/workflows/omomp-check.yml` runs the shared omomp check (install, `bun run check`, `bun run test`, shared-copy comparison) on every push to `main` and every PR.
+
 A commit writes its user-visible entries under `## [Unreleased]` in `CHANGELOG.md` and changes no version: after `git add`, run `uvx --from lgit-cli lgit`. The daily release run (`.github/workflows/omomp-release.yml`, 02:00 GMT+9) publishes that section; see `CLAUDE.md`.
