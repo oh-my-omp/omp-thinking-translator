@@ -1,0 +1,10 @@
+name: omomp-check
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  check:
+    uses: oh-my-omp/.github/.github/workflows/omomp-check.yml@main

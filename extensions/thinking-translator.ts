@@ -1,23 +1,20 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { streamSimple, THINKING_EFFORTS, type Api, type Effort, type Model, type SimpleStreamOptions } from "@oh-my-pi/pi-ai";
+import { type Api, type Effort, type Model, type SimpleStreamOptions, streamSimple, THINKING_EFFORTS } from "@oh-my-pi/pi-ai";
 import type { AssistantThinkingRenderContext, ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { getAgentDir, getMarkdownTheme } from "@oh-my-pi/pi-coding-agent";
 import { cfgExpandThinkingBlocks } from "@oh-my-pi/pi-coding-agent/session/settings";
-import { tr } from "./i18n";
-import { Box, Markdown, Text, node, span } from "@oh-my-pi/pi-tui";
 import type { Component, DescribeContext, NativeEventTarget, NativeNode, NativeUiEvent } from "@oh-my-pi/pi-tui";
+import { Box, Markdown, node, span, Text } from "@oh-my-pi/pi-tui";
 import type { Theme } from "@oh-my-pi/pi-tui/theme/theme";
+import { tr } from "../omomp-shared/i18n.ts";
 
 /** 配置里的推理强度：宿主等级的字符串取值，加上关闭推理的 `off`。 */
 type EffortSetting = "off" | `${Effort}`;
 type ModelRef = { provider: string; id: string; effort?: EffortSetting };
 /** 一行译文只在整行完成或最终失败后显示；请求仍流式接收，用于尽早发现协议标记并换模型。 */
-type TranslationProgress =
-	| { status: "pending" }
-	| { status: "done"; translation: string }
-	| { status: "error"; error: string };
+type TranslationProgress = { status: "pending" } | { status: "done"; translation: string } | { status: "error"; error: string };
 /**
  * 一行一个共享状态格；文本相同的行共用同一次请求。
  * `painted` 记录译文落地后那几行有没有再被渲染过：宿主把 thinking 行提交进原生历史后就不再调用
@@ -77,11 +74,12 @@ export function buildLateRows(
 	if (pending.length === 0) return undefined;
 	const currentRows = pending.map(({ thinkingIndex, text }) => ({ thinkingIndex, text }));
 	const rows = coalescing && previousPayload ? [...previousPayload.rows, ...currentRows] : currentRows;
-	const blockLabels = [...new Set(rows.map((row) => row.thinkingIndex))].map((index) =>
-		tr(`Block ${index + 1}`, `第 ${index + 1} 块`),
-	);
+	const blockLabels = [...new Set(rows.map((row) => row.thinkingIndex))].map((index) => tr(`Block ${index + 1}`, `第 ${index + 1} 块`));
 	return {
-		text: [tr(`Thinking translation · ${blockLabels.join(", ")}`, `思考翻译 · ${blockLabels.join("、")}`), ...rows.map((row) => row.text)].join("\n"),
+		text: [
+			tr(`Thinking translation · ${blockLabels.join(", ")}`, `思考翻译 · ${blockLabels.join("、")}`),
+			...rows.map((row) => row.text),
+		].join("\n"),
 		rows,
 	};
 }
@@ -111,14 +109,14 @@ let traceFile: string | undefined;
 function trace(tag: string, data?: Record<string, unknown>): void {
 	if (!traceFile) return;
 	try {
-		appendFileSync(traceFile, JSON.stringify({ t: new Date().toISOString(), pid: process.pid, tag, ...data }) + "\n");
+		appendFileSync(traceFile, `${JSON.stringify({ t: new Date().toISOString(), pid: process.pid, tag, ...data })}\n`);
 	} catch {}
 }
 /** 配置为 true 时跟着会话文件走；`--no-session` 这类没有会话文件的进程不落盘。 */
 function resolveTraceFile(config: ResolvedTranslatorConfig, sessionFile: string | undefined): string | undefined {
 	if (config.trace === false) return undefined;
 	if (typeof config.trace === "string") return config.trace;
-	return sessionFile ? sessionFile.replace(/\.jsonl$/, "") + ".thinking-translator-trace.jsonl" : undefined;
+	return sessionFile ? `${sessionFile.replace(/\.jsonl$/, "")}.thinking-translator-trace.jsonl` : undefined;
 }
 /**
  * 翻译模型不在注册表里时，由扩展自己触发该 provider 的模型发现（宿主只为主模型做这件事；
@@ -222,7 +220,15 @@ export default function thinkingTranslator(pi: ExtensionAPI) {
 		last.liveBlocks = liveBlocks.size;
 		last.hasCtx = hasCtx;
 		last.hasConfig = hasConfig;
-		trace("factory", { thinkingIndex: context.thinkingIndex, contentIndex: context.contentIndex, textLen: context.text.length, sources, liveBlocks: liveBlocks.size, hasCtx, hasConfig });
+		trace("factory", {
+			thinkingIndex: context.thinkingIndex,
+			contentIndex: context.contentIndex,
+			textLen: context.text.length,
+			sources,
+			liveBlocks: liveBlocks.size,
+			hasCtx,
+			hasConfig,
+		});
 	}
 
 	/**
@@ -235,7 +241,11 @@ export default function thinkingTranslator(pi: ExtensionAPI) {
 	 * - 已完整展示行的解析记录：只在这一行在追踪块里的首个命中就是本块、且排在本块之前的块都已收尾时记录，
 	 *   那样结果在块的生命周期里不会再变。块被逐出后渲染器即使仍被宿主重绘，也丢掉记录、逐帧现算。
 	 */
-	function createBlockRenderer(initialContext: AssistantThinkingRenderContext, initialTheme: Theme, ownKey: string | undefined): BlockRenderer {
+	function createBlockRenderer(
+		initialContext: AssistantThinkingRenderContext,
+		initialTheme: Theme,
+		ownKey: string | undefined,
+	): BlockRenderer {
 		let context = initialContext;
 		let theme = initialTheme;
 		/** 切分所依据的展示文本，与 `bounds` 对应。 */
@@ -296,7 +306,8 @@ export default function thinkingTranslator(pi: ExtensionAPI) {
 			if (own === undefined) records.length = 0;
 			else if (recordsPrefix !== current.keyPrefix) {
 				const previous = recordsPrefix;
-				if (previous !== undefined) for (const record of records) if (record) record.key = current.keyPrefix + record.key.slice(previous.length);
+				if (previous !== undefined)
+					for (const record of records) if (record) record.key = current.keyPrefix + record.key.slice(previous.length);
 				recordsPrefix = current.keyPrefix;
 			}
 			let missing: string[] | undefined;
@@ -305,7 +316,10 @@ export default function thinkingTranslator(pi: ExtensionAPI) {
 				const record = records[index];
 				if (record) {
 					frameKeys[index] = record.key;
-					if (dispatching && record.translatable && !translations.has(record.key)) (missing ??= []).push(record.key.slice(current.keyPrefix.length));
+					if (dispatching && record.translatable && !translations.has(record.key)) {
+						missing ??= [];
+						missing.push(record.key.slice(current.keyPrefix.length));
+					}
 					continue;
 				}
 				const line = lineAt(index);
@@ -313,9 +327,13 @@ export default function thinkingTranslator(pi: ExtensionAPI) {
 				const translatable = shouldTranslateLine(line);
 				const key = current.keyPrefix + (canonical ?? line);
 				frameKeys[index] = key;
-				if (dispatching && translatable && canonical !== undefined && !translations.has(key)) (missing ??= []).push(canonical);
+				if (dispatching && translatable && canonical !== undefined && !translations.has(key)) {
+					missing ??= [];
+					missing.push(canonical);
+				}
 				// 记录只存格键：本帧取格时会对它求哈希，拼接出的键随即成为独立字符串，不留住块原文。
-				if (own !== undefined && index < completeLines && canonical !== undefined && ownsFirstMatch(liveBlocks, own, line)) records[index] = { key, translatable };
+				if (own !== undefined && index < completeLines && canonical !== undefined && ownsFirstMatch(liveBlocks, own, line))
+					records[index] = { key, translatable };
 			}
 			return missing;
 		};
@@ -345,7 +363,13 @@ export default function thinkingTranslator(pi: ExtensionAPI) {
 			lastRenderCodes.length = frameCells.length;
 			if (changed) {
 				lastRenderNoConfig = false;
-				trace("render", { thinkingIndex: context.thinkingIndex, sources: lineCount, cells: lastRenderCodes.map((code) => RENDER_CODE_TEXT[code]).join(","), width, native: nativeSeen });
+				trace("render", {
+					thinkingIndex: context.thinkingIndex,
+					sources: lineCount,
+					cells: lastRenderCodes.map((code) => RENDER_CODE_TEXT[code]).join(","),
+					width,
+					native: nativeSeen,
+				});
 			}
 			if (frameCells.length === 0) return undefined;
 			let completed = 0;
@@ -439,7 +463,10 @@ export default function thinkingTranslator(pi: ExtensionAPI) {
 				const sig = `${live ? "L" : "D"}${collapsed ? "C" : "O"}`;
 				if (!sectionNode || sig !== sectionSig) {
 					sectionSig = sig;
-					sectionNode = node("section", { role: live ? "omp.thinking.live" : "omp.thinking", collapsible: true, collapsed }, [live ? liveHead : settledHead, content]);
+					sectionNode = node("section", { role: live ? "omp.thinking.live" : "omp.thinking", collapsible: true, collapsed }, [
+						live ? liveHead : settledHead,
+						content,
+					]);
 				}
 				return sectionNode;
 			},
@@ -470,17 +497,19 @@ export default function thinkingTranslator(pi: ExtensionAPI) {
 		description: tr("Show or initialize thinking-translator configuration", "查看或初始化 thinking-translator 配置"),
 		getArgumentCompletions: (prefix) => {
 			const options = ["status", "init", "init --global", "init --project"];
-			return options.filter((option) => option.startsWith(prefix)).map((value) => ({
-				value,
-				label:
-					value === "status"
-						? tr("status — show current configuration", "status — 显示当前配置")
-						: value === "init"
-							? tr("init — initialize global configuration", "init — 初始化全局配置")
-							: value === "init --global"
-								? tr("init --global — initialize global configuration", "init --global — 初始化全局配置")
-								: tr("init --project — initialize project configuration", "init --project — 初始化项目配置"),
-			}));
+			return options
+				.filter((option) => option.startsWith(prefix))
+				.map((value) => ({
+					value,
+					label:
+						value === "status"
+							? tr("status — show current configuration", "status — 显示当前配置")
+							: value === "init"
+								? tr("init — initialize global configuration", "init — 初始化全局配置")
+								: value === "init --global"
+									? tr("init --global — initialize global configuration", "init --global — 初始化全局配置")
+									: tr("init --project — initialize project configuration", "init --project — 初始化项目配置"),
+				}));
 		},
 		handler: handleConfigCommand,
 	});
@@ -589,7 +618,8 @@ export default function thinkingTranslator(pi: ExtensionAPI) {
 	function prepareDispatch(): ExtensionContext | undefined {
 		const ctx = latestContext;
 		if (!ctx) return undefined;
-		const { config } = (active ??= activate(loadConfig(ctx)));
+		active ??= activate(loadConfig(ctx));
+		const { config } = active;
 		if (!config.enabled) return undefined;
 		if (config.translatorModels.length === 0) {
 			notifyMissingModel(
@@ -613,7 +643,14 @@ export default function thinkingTranslator(pi: ExtensionAPI) {
 	 * 重绘回调取自发起分发的那个组件，而不是模块里"最后一次"的那个：后者会被下一块的工厂覆盖，
 	 * 译文回来时催的就不是自己那一块。
 	 */
-	function dispatch(ctx: ExtensionContext, current: ActiveConfig, missing: readonly string[], sources: number, notify: () => void, thinkingIndex: number): void {
+	function dispatch(
+		ctx: ExtensionContext,
+		current: ActiveConfig,
+		missing: readonly string[],
+		sources: number,
+		notify: () => void,
+		thinkingIndex: number,
+	): void {
 		trace("dispatch", { thinkingIndex, sources, missing: missing.length });
 		const signal = controller.signal;
 		// 先占格：模型解析可能要等一次网络发现，期间的重绘不能再为同一行发起分发。
@@ -646,7 +683,13 @@ export default function thinkingTranslator(pi: ExtensionAPI) {
 		active = activate(loadConfig(ctx));
 		traceFile = resolveTraceFile(active.config, ctx.sessionManager.getSessionFile());
 		messageSeq++;
-		trace("message_start", { messageSeq, hasNotify: typeof ctx.ui?.notify === "function", cwd: ctx.cwd, enabled: active.config.enabled, models: active.config.translatorModels.map(modelLabel) });
+		trace("message_start", {
+			messageSeq,
+			hasNotify: typeof ctx.ui?.notify === "function",
+			cwd: ctx.cwd,
+			enabled: active.config.enabled,
+			models: active.config.translatorModels.map(modelLabel),
+		});
 		// 上一条消息的块原文要留着：它的组件还在被重绘，逐行匹配得拿自己那份原文。
 		for (const key of liveBlocks.keys()) {
 			if (liveBlocks.size <= MAX_TRACKED_BLOCKS) break;
@@ -670,7 +713,12 @@ export default function thinkingTranslator(pi: ExtensionAPI) {
 		}
 		if (blockEvent.type !== "thinking_end") return;
 		liveBlocks.set(blockKey(messageSeq, blockEvent.contentIndex), { raw: blockEvent.content, ended: true });
-		trace("thinking_end", { messageSeq, contentIndex: blockEvent.contentIndex, rawLen: blockEvent.content.length, hasRequestRender: requestRender !== undefined });
+		trace("thinking_end", {
+			messageSeq,
+			contentIndex: blockEvent.contentIndex,
+			rawLen: blockEvent.content.length,
+			hasRequestRender: requestRender !== undefined,
+		});
 		// 末行此刻才定型，催一次重绘让它进入分发。
 		requestRender?.();
 	});
@@ -773,7 +821,12 @@ async function streamTranslation(
 	const auth = await getTranslatorAuth(ctx, translatorModel);
 	if (signal.aborted) return undefined;
 	const prompt = buildTranslationPrompt(source, targetLanguage);
-	trace("request", { source: source.slice(0, 60), model: `${translatorModel.provider}/${translatorModel.id}`, effort: effort ?? "default", hasKey: auth.apiKey !== undefined });
+	trace("request", {
+		source: source.slice(0, 60),
+		model: `${translatorModel.provider}/${translatorModel.id}`,
+		effort: effort ?? "default",
+		hasKey: auth.apiKey !== undefined,
+	});
 	// 只中断当前模型的请求；外层 signal 仍控制整条翻译任务，marker 命中则抛错让 translateLine 换下一个模型。
 	const attemptController = new AbortController();
 	const requestSignal = AbortSignal.any([signal, attemptController.signal]);
@@ -781,7 +834,13 @@ async function streamTranslation(
 	const eventStream = streamSimple(
 		translatorModel,
 		{ messages: [{ role: "user", content: [{ type: "text", text: prompt }], timestamp: Date.now() }] },
-		{ apiKey: auth.apiKey, headers: auth.headers, maxTokens: Math.min(8192, Math.max(1024, Math.ceil(source.length * 1.3))), signal: requestSignal, ...reasoningOptions(effort) },
+		{
+			apiKey: auth.apiKey,
+			headers: auth.headers,
+			maxTokens: Math.min(8192, Math.max(1024, Math.ceil(source.length * 1.3))),
+			signal: requestSignal,
+			...reasoningOptions(effort),
+		},
 	);
 	// 收集各段增量，结束时拼一次；协议标记只在上一段末尾与本段增量组成的窗口里找，不反复扫描整份译文。
 	const parts: string[] = [];
@@ -959,7 +1018,10 @@ function resolveTrackedBlockKey(blocks: ReadonlyMap<string, LiveBlock>, lines: I
 		let matched: string[] | undefined;
 		for (const key of candidates ?? blocks.keys()) {
 			const block = blocks.get(key)!;
-			if (matchBlockLine(block.raw, line, block.ended) !== undefined) (matched ??= []).push(key);
+			if (matchBlockLine(block.raw, line, block.ended) !== undefined) {
+				matched ??= [];
+				matched.push(key);
+			}
 		}
 		if (matched === undefined) continue;
 		if (matched.length === 1) return matched[0];
@@ -1036,8 +1098,8 @@ function loadConfigState(ctx?: NotifierContext): ConfigState {
 		}
 		try {
 			const raw: unknown = JSON.parse(readFileSync(info.path, "utf8"));
-			configErrorNotified.delete(info.path);
 			config = mergeConfig(config, raw);
+			configErrorNotified.delete(info.path);
 		} catch (error) {
 			errors.push({ scope: info.scope, path: info.path, error });
 			notifyConfigLoadError(ctx, info.path, error);
@@ -1052,13 +1114,22 @@ function mergeConfig(base: ResolvedTranslatorConfig, value: unknown): ResolvedTr
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(tr("Config must be an object", "配置必须是对象"));
 	const raw = value as Record<string, unknown>;
 	if (raw.enabled !== undefined && typeof raw.enabled !== "boolean") throw new Error(tr("enabled must be boolean", "enabled 必须是布尔值"));
-	if (raw.targetLanguage !== undefined && (typeof raw.targetLanguage !== "string" || !raw.targetLanguage.trim())) throw new Error(tr("targetLanguage must be a non-empty string", "targetLanguage 必须是非空字符串"));
-	if (raw.trace !== undefined && raw.trace !== null && typeof raw.trace !== "string" && typeof raw.trace !== "boolean") throw new Error(tr("trace must be a path string or boolean", "trace 必须是路径字符串或布尔值"));
+	if (raw.targetLanguage !== undefined && (typeof raw.targetLanguage !== "string" || !raw.targetLanguage.trim()))
+		throw new Error(tr("targetLanguage must be a non-empty string", "targetLanguage 必须是非空字符串"));
+	if (raw.trace !== undefined && raw.trace !== null && typeof raw.trace !== "string" && typeof raw.trace !== "boolean")
+		throw new Error(tr("trace must be a path string or boolean", "trace 必须是路径字符串或布尔值"));
 	return {
 		enabled: typeof raw.enabled === "boolean" ? raw.enabled : base.enabled,
 		targetLanguage: typeof raw.targetLanguage === "string" ? raw.targetLanguage : base.targetLanguage,
 		translatorModels: normalizeTranslatorModels(raw.translatorModels, base.translatorModels),
-		trace: raw.trace === null ? true : typeof raw.trace === "boolean" ? raw.trace : typeof raw.trace === "string" && raw.trace.trim() ? raw.trace : base.trace,
+		trace:
+			raw.trace === null
+				? true
+				: typeof raw.trace === "boolean"
+					? raw.trace
+					: typeof raw.trace === "string" && raw.trace.trim()
+						? raw.trace
+						: base.trace,
 	};
 }
 
@@ -1066,15 +1137,21 @@ function mergeConfig(base: ResolvedTranslatorConfig, value: unknown): ResolvedTr
 function normalizeTranslatorModels(value: unknown, fallback: readonly ModelRef[]): readonly ModelRef[] {
 	if (value === undefined) return fallback;
 	if (value === null) return [];
-	if (!Array.isArray(value)) throw new Error(tr("translatorModels must be an array of { provider, id, effort? }", "translatorModels 必须是 { provider, id, effort? } 数组"));
+	if (!Array.isArray(value))
+		throw new Error(
+			tr("translatorModels must be an array of { provider, id, effort? }", "translatorModels 必须是 { provider, id, effort? } 数组"),
+		);
 	return value.map((entry, index) => parseModelRef(entry, `translatorModels[${index}]`));
 }
 
 function parseModelRef(value: unknown, path: string): ModelRef {
-	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(tr(`${path} must be an object { provider, id, effort? }`, `${path} 必须是 { provider, id, effort? } 对象`));
+	if (!value || typeof value !== "object" || Array.isArray(value))
+		throw new Error(tr(`${path} must be an object { provider, id, effort? }`, `${path} 必须是 { provider, id, effort? } 对象`));
 	const raw = value as Record<string, unknown>;
-	if (typeof raw.provider !== "string" || !raw.provider.trim()) throw new Error(tr(`${path}.provider must be a non-empty string`, `${path}.provider 必须是非空字符串`));
-	if (typeof raw.id !== "string" || !raw.id.trim()) throw new Error(tr(`${path}.id must be a non-empty string`, `${path}.id 必须是非空字符串`));
+	if (typeof raw.provider !== "string" || !raw.provider.trim())
+		throw new Error(tr(`${path}.provider must be a non-empty string`, `${path}.provider 必须是非空字符串`));
+	if (typeof raw.id !== "string" || !raw.id.trim())
+		throw new Error(tr(`${path}.id must be a non-empty string`, `${path}.id 必须是非空字符串`));
 	const effort = raw.effort === undefined || raw.effort === null ? undefined : parseEffortSetting(raw.effort, `${path}.effort`);
 	return { provider: raw.provider, id: raw.id, ...(effort ? { effort } : {}) };
 }
@@ -1082,7 +1159,9 @@ function parseModelRef(value: unknown, path: string): ModelRef {
 /** 配置边界：只接受 `off` 与宿主等级；其他值抛错，交给配置错误策略禁用翻译，拼错不会静默回落默认。 */
 function parseEffortSetting(value: unknown, path: string): EffortSetting {
 	if (value === "off" || (typeof value === "string" && isEffortLevel(value))) return value;
-	throw new Error(tr(`${path} must be one of: off, ${THINKING_EFFORTS.join(", ")}`, `${path} 必须是以下值之一：off、${THINKING_EFFORTS.join("、")}`));
+	throw new Error(
+		tr(`${path} must be one of: off, ${THINKING_EFFORTS.join(", ")}`, `${path} 必须是以下值之一：off、${THINKING_EFFORTS.join("、")}`),
+	);
 }
 
 function isEffortLevel(value: string): value is `${Effort}` {
@@ -1214,14 +1293,14 @@ function initConfigFile(ctx: ExtensionContext, scope: "global" | "project"): voi
 	mkdirSync(dirname(path), { recursive: true });
 	writeFileSync(
 		path,
-		JSON.stringify(
+		`${JSON.stringify(
 			{
 				enabled: false,
 				targetLanguage: DEFAULT_CONFIG.targetLanguage,
 			},
 			null,
 			2,
-		) + "\n",
+		)}\n`,
 		"utf8",
 	);
 	ctx.ui.notify(
@@ -1267,7 +1346,10 @@ function shouldTranslateLine(line: string): boolean {
 }
 
 /** 鉴权统一走宿主注册表，失败时提供清晰诊断而不另找凭据。 */
-async function getTranslatorAuth(ctx: ExtensionContext, translatorModel: Model<Api>): Promise<{ apiKey?: string; headers?: Record<string, string> }> {
+async function getTranslatorAuth(
+	ctx: ExtensionContext,
+	translatorModel: Model<Api>,
+): Promise<{ apiKey?: string; headers?: Record<string, string> }> {
 	const auth = await ctx.modelRegistry.getApiKeyAndHeaders(translatorModel).catch((error: unknown) => {
 		const message = error instanceof Error ? error.message : String(error);
 		throw new Error(tr("Failed to get translator model credentials: ", "获取翻译模型凭据失败：") + message);

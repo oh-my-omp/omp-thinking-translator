@@ -1,0 +1,11 @@
+{
+	"formatter": { "indentStyle": "tab", "lineWidth": 140 },
+	"javascript": { "formatter": { "quoteStyle": "double", "semicolons": "always", "trailingCommas": "all" } },
+	"linter": {
+		"rules": {
+			"preset": "recommended",
+			"suspicious": { "noExplicitAny": "error" },
+			"style": { "noNonNullAssertion": "off" }
+		}
+	}
+}

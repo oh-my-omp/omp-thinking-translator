@@ -1,8 +1,8 @@
-import test from "node:test";
 import assert from "node:assert/strict";
+import test from "node:test";
 import { __testing } from "../extensions/thinking-translator.ts";
-import { LANGUAGE_ENV, language, resolveLanguage, tr } from "../extensions/i18n.ts";
 import { formatThinkingForDisplay } from "../node_modules/@oh-my-pi/pi-tui/src/chat/thinking-display.ts";
+import { LANGUAGE_ENV, tr } from "../omomp-shared/i18n.ts";
 
 // Error-message assertions below use English regardless of the developer's locale.
 process.env[LANGUAGE_ENV] = "en";
@@ -10,26 +10,6 @@ process.env[LANGUAGE_ENV] = "en";
 const blockLabel = (index: number): string => tr(`Block ${index}`, `第 ${index} 块`);
 const lateHeader = (labels: readonly string[]): string =>
 	tr(`Thinking translation · ${labels.join(", ")}`, `思考翻译 · ${labels.join("、")}`);
-test("language resolution follows explicit env, locale, and call-time changes", () => {
-	assert.equal(resolveLanguage({ OMOMP_LANG: " ZH ", LC_ALL: "en_US.UTF-8" }), "zh");
-	assert.equal(resolveLanguage({ OMOMP_LANG: "invalid", LC_ALL: "", LC_MESSAGES: "  ", LANG: "zh_CN.UTF-8" }), "zh");
-	assert.equal(resolveLanguage({ OMOMP_LANG: "zh-CN", LANG: "en_US.UTF-8" }), "en");
-	assert.equal(resolveLanguage({ OMOMP_LANG: "invalid", LC_ALL: "en_US.UTF-8", LC_MESSAGES: "zh_CN.UTF-8" }), "en");
-	assert.equal(resolveLanguage({}), "en");
-
-	const previous = process.env[LANGUAGE_ENV];
-	try {
-		process.env[LANGUAGE_ENV] = "en";
-		assert.equal(language(), "en");
-		process.env[LANGUAGE_ENV] = "ZH";
-		assert.equal(language(), "zh");
-	} finally {
-		if (previous === undefined) delete process.env[LANGUAGE_ENV];
-		else process.env[LANGUAGE_ENV] = previous;
-	}
-});
-
-
 test("config paths honor the active omp agent directory and project root", () => {
 	assert.equal(__testing.getGlobalConfigPath("/profiles/work/agent", "/home/user"), "/profiles/work/agent/thinking-translator.json");
 	assert.equal(__testing.getGlobalConfigPath(undefined, "/home/user"), "/home/user/.omp/agent/thinking-translator.json");
@@ -46,7 +26,9 @@ test("a short single-line thinking block is translatable", () => {
 
 test("legacy and unknown fields are ignored without losing valid overrides", () => {
 	const config = __testing.mergeConfig(__testing.DEFAULT_CONFIG, {
-		contentTypes: ["text"], extra: 123, targetLanguage: "Japanese",
+		contentTypes: ["text"],
+		extra: 123,
+		targetLanguage: "Japanese",
 		translatorModel: { provider: "old", id: "single" },
 		translatorModels: [{ provider: "faux", id: "translator" }],
 	});
@@ -64,7 +46,13 @@ test("invalid known fields fail closed instead of enabling unexpected requests",
 	// 拼错或类型不对的 effort 让整份配置无效，而不是静默回落到模型默认强度；报错指明是链上的第几个。
 	for (const effort of ["fast", "Low", "", 1, true]) {
 		assert.throws(
-			() => __testing.mergeConfig(__testing.DEFAULT_CONFIG, { translatorModels: [{ provider: "bansos", id: "a" }, { provider: "bansos", id: "m", effort }] }),
+			() =>
+				__testing.mergeConfig(__testing.DEFAULT_CONFIG, {
+					translatorModels: [
+						{ provider: "bansos", id: "a" },
+						{ provider: "bansos", id: "m", effort },
+					],
+				}),
 			/translatorModels\[1\]\.effort must be one of: off, minimal, low, medium, high, xhigh, max/,
 		);
 	}
@@ -93,9 +81,14 @@ test("translatorModels keeps the configured order and effort per entry", () => {
 
 test("a project translatorModels replaces the whole global chain, null clears it, absence keeps it", () => {
 	const global = __testing.mergeConfig(__testing.DEFAULT_CONFIG, {
-		translatorModels: [{ provider: "bansos", id: "a", effort: "low" }, { provider: "bansos", id: "b" }],
+		translatorModels: [
+			{ provider: "bansos", id: "a", effort: "low" },
+			{ provider: "bansos", id: "b" },
+		],
 	});
-	assert.deepEqual(__testing.mergeConfig(global, { translatorModels: [{ provider: "ollama", id: "c" }] }).translatorModels, [{ provider: "ollama", id: "c" }]);
+	assert.deepEqual(__testing.mergeConfig(global, { translatorModels: [{ provider: "ollama", id: "c" }] }).translatorModels, [
+		{ provider: "ollama", id: "c" },
+	]);
 	assert.deepEqual(__testing.mergeConfig(global, { translatorModels: null }).translatorModels, []);
 	assert.deepEqual(__testing.mergeConfig(global, {}).translatorModels, global.translatorModels);
 });
@@ -112,7 +105,10 @@ test("normalizeTranslatorModels rejects non-arrays and incomplete entries instea
 		assert.throws(() => __testing.normalizeTranslatorModels(value, []), /translatorModels must be an array/);
 	}
 	// 链里悄悄少一个模型会改变回退顺序，所以不完整的项让配置无效，而不是被跳过。
-	assert.throws(() => __testing.normalizeTranslatorModels([{ provider: "ollama", id: "a" }, { provider: "ollama" }], []), /translatorModels\[1\]\.id must be a non-empty string/);
+	assert.throws(
+		() => __testing.normalizeTranslatorModels([{ provider: "ollama", id: "a" }, { provider: "ollama" }], []),
+		/translatorModels\[1\]\.id must be a non-empty string/,
+	);
 	assert.throws(() => __testing.normalizeTranslatorModels([{ id: "a" }], []), /translatorModels\[0\]\.provider must be a non-empty string/);
 	assert.throws(() => __testing.normalizeTranslatorModels([{ provider: " ", id: "a" }], []), /translatorModels\[0\]\.provider/);
 	assert.throws(() => __testing.normalizeTranslatorModels(["ollama/a"], []), /translatorModels\[0\] must be an object/);
@@ -185,7 +181,10 @@ test("the tail of a streaming block waits for that block to end", () => {
 	const raw = "The queue drains at 120 per second.\nSo the retry budget";
 	// 生成中：原文末尾只是"暂时到这儿"，这一行还会继续长。
 	assert.equal(__testing.resolveTrackedLine([{ raw, ended: false }], "So the retry budget"), undefined);
-	assert.equal(__testing.resolveTrackedLine([{ raw, ended: false }], "The queue drains at 120 per second."), "The queue drains at 120 per second.");
+	assert.equal(
+		__testing.resolveTrackedLine([{ raw, ended: false }], "The queue drains at 120 per second."),
+		"The queue drains at 120 per second.",
+	);
 	// 收尾后（含 provider 漏发 thinking_end、由 message_end 兜底的情况）末行才定型。
 	assert.equal(__testing.resolveTrackedLine([{ raw, ended: true }], "So the retry budget"), "So the retry budget");
 });
@@ -223,7 +222,7 @@ test("blocks sharing a first line are told apart by later lines, newest wins a f
  */
 test("every line the host still displays matches its raw thinking", () => {
 	const samples = [
-		"Let me check the config file first.\n```json\n{\"a\": 1}\n```\nThen I will run the tests.",
+		'Let me check the config file first.\n```json\n{"a": 1}\n```\nThen I will run the tests.',
 		"The helper currently looks like this:\n```ts\nfunction parse(input: string) {\n  return input.trim();\n}\n```\nSo trailing whitespace is dropped.",
 		"I will sketch the helper now.\n```ts\nfunction f() {",
 		"First I confirm the path.\n<!-- -->\n<!--   -->\nThen I read the file.",
@@ -252,7 +251,10 @@ test("the cell key prefix separates model chain, order, effort, and target langu
 	assert.notEqual(__testing.cellKeyPrefix(base) + line, __testing.cellKeyPrefix(withEffort("low")) + line);
 	assert.notEqual(__testing.cellKeyPrefix(withEffort("low")) + line, __testing.cellKeyPrefix(withEffort("high")) + line);
 	assert.notEqual(__testing.cellKeyPrefix(withEffort("off")) + line, __testing.cellKeyPrefix(withEffort("low")) + line);
-	assert.equal(__testing.cellKeyPrefix(base) + line, __testing.cellKeyPrefix({ ...base, translatorModels: [{ ...first }, { ...second }] }) + line);
+	assert.equal(
+		__testing.cellKeyPrefix(base) + line,
+		__testing.cellKeyPrefix({ ...base, translatorModels: [{ ...first }, { ...second }] }) + line,
+	);
 });
 
 test("cleanTranslation removes common model wrappers", () => {
@@ -283,14 +285,18 @@ test("a SOURCE_TEXT_BEGIN split across two deltas still aborts the attempt", () 
 	const controller = new AbortController();
 	const tail = __testing.scanForSourceTextBegin("", "Here the model echoes SOURCE_TE", controller);
 	assert.equal(controller.signal.aborted, false);
-	assert.throws(() => __testing.scanForSourceTextBegin(tail, "XT_BEGIN and the input", controller), /Translator returned SOURCE_TEXT_BEGIN/);
+	assert.throws(
+		() => __testing.scanForSourceTextBegin(tail, "XT_BEGIN and the input", controller),
+		/Translator returned SOURCE_TEXT_BEGIN/,
+	);
 	assert.equal(controller.signal.aborted, true);
 });
 
 test("the marker window carries only the characters a split marker can need", () => {
 	const controller = new AbortController();
 	let tail = "";
-	for (const delta of ["一段很长的译文，", "没有协议标记，", "只有 SOURCE_TEXT", "_END 这样的近似文字。"]) tail = __testing.scanForSourceTextBegin(tail, delta, controller);
+	for (const delta of ["一段很长的译文，", "没有协议标记，", "只有 SOURCE_TEXT", "_END 这样的近似文字。"])
+		tail = __testing.scanForSourceTextBegin(tail, delta, controller);
 	assert.equal(controller.signal.aborted, false);
 	assert.equal(tail.length, "SOURCE_TEXT_BEGIN".length - 1);
 });
@@ -310,7 +316,14 @@ test("splitTranslationLines trims outer indent but keeps internal spacing", () =
 });
 
 test("translationLines yields exactly the lines splitTranslationLines returns", () => {
-	for (const text of ["\n first\r\n\n中文\n123\nsecond\nfirst\n", "", "   \n \t \n  ", "  foo  bar  \n  baz   qux  ", "a tail without newline", "line one\nline two\n"]) {
+	for (const text of [
+		"\n first\r\n\n中文\n123\nsecond\nfirst\n",
+		"",
+		"   \n \t \n  ",
+		"  foo  bar  \n  baz   qux  ",
+		"a tail without newline",
+		"line one\nline two\n",
+	]) {
 		assert.deepEqual([...__testing.translationLines(text)], __testing.splitTranslationLines(text));
 	}
 });
@@ -346,11 +359,7 @@ test("a line counts as its block's own only when no earlier or open block can cl
 });
 
 test("buildLateRows omits translations whose boxes were already painted", () => {
-	const paintedOnly = __testing.buildLateRows(
-		[{ thinkingIndex: 0, text: "已经画进框里", painted: true }],
-		undefined,
-		false,
-	);
+	const paintedOnly = __testing.buildLateRows([{ thinkingIndex: 0, text: "已经画进框里", painted: true }], undefined, false);
 	assert.equal(paintedOnly, undefined);
 
 	const mixed = __testing.buildLateRows(
@@ -377,25 +386,13 @@ test("buildLateRows merges back-to-back late translations into one payload", () 
 });
 
 test("buildLateRows carries the previous payload only while coalescing is possible", () => {
-	const previous = __testing.buildLateRows(
-		[{ thinkingIndex: 1, text: "上一段译文", painted: false }],
-		undefined,
-		false,
-	);
+	const previous = __testing.buildLateRows([{ thinkingIndex: 1, text: "上一段译文", painted: false }], undefined, false);
 	assert.ok(previous);
 
-	const merged = __testing.buildLateRows(
-		[{ thinkingIndex: 1, text: "新的一段译文", painted: false }],
-		previous,
-		true,
-	);
+	const merged = __testing.buildLateRows([{ thinkingIndex: 1, text: "新的一段译文", painted: false }], previous, true);
 	assert.equal(merged?.text, `${lateHeader([blockLabel(2)])}\n上一段译文\n新的一段译文`);
 
-	const fresh = __testing.buildLateRows(
-		[{ thinkingIndex: 2, text: "下一块译文", painted: false }],
-		previous,
-		false,
-	);
+	const fresh = __testing.buildLateRows([{ thinkingIndex: 2, text: "下一块译文", painted: false }], previous, false);
 	assert.equal(fresh?.text, `${lateHeader([blockLabel(3)])}\n下一块译文`);
 });
 
@@ -410,7 +407,6 @@ test("buildLateRows keeps distinct block sources in one header line", () => {
 	);
 	assert.equal(payload?.text, `${lateHeader([blockLabel(1), blockLabel(2)])}\n第一块译文\n第二块译文`);
 });
-
 
 test("buildLateRows localizes queued and coalesced block indices at notification time", () => {
 	const previousLanguage = process.env[LANGUAGE_ENV];
@@ -436,7 +432,11 @@ test("buildLateRows localizes queued and coalesced block indices at notification
 			assert.equal(coalesced?.text, fresh?.text);
 			assert.deepEqual(coalesced?.rows, fresh?.rows);
 			assert.equal(
-				__testing.buildLateRows(queued.map((row) => ({ ...row, painted: true })), previous, true),
+				__testing.buildLateRows(
+					queued.map((row) => ({ ...row, painted: true })),
+					previous,
+					true,
+				),
 				undefined,
 			);
 		}
