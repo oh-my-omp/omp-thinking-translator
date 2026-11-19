@@ -12,6 +12,12 @@ import { type Candidate, modelLabel } from "./role.ts";
 /** A line's translation state; pending lines are counted in the box title but take no row. */
 export type TranslationProgress = { status: "pending" } | { status: "done"; translation: string } | { status: "error"; error: string };
 export type TranslationOutcome = Exclude<TranslationProgress, { status: "pending" }>;
+/**
+ * One shared state per line key; equal lines share one request. `painted` records whether a box drew the
+ * finished line: once omp commits a message to terminal scrollback it stops redrawing it, and this bit tells
+ * "drawn" apart from "will never be drawn" for the late-notification fallback.
+ */
+export type TranslationCell = { progress: TranslationProgress; painted: boolean };
 
 export type RequestAuth = Readonly<{ apiKey?: string; headers?: Record<string, string> }>;
 
@@ -73,16 +79,27 @@ async function streamTranslation(
 	signal: AbortSignal,
 ): Promise<string | undefined> {
 	const auth = await deps.auth(model).catch((error: unknown) => {
-		throw new Error(tr("Failed to get translator model credentials: ", "获取翻译模型凭据失败：") + (error instanceof Error ? error.message : String(error)));
+		throw new Error(
+			tr("Failed to get translator model credentials: ", "获取翻译模型凭据失败：") +
+				(error instanceof Error ? error.message : String(error)),
+		);
 	});
 	if (signal.aborted) return undefined;
-	deps.log("request", { source: source.slice(0, 60), model: modelLabel(model), reasoning: reasoning.disableReasoning ? "off" : (reasoning.reasoning ?? "default") });
+	deps.log("request", {
+		source: source.slice(0, 60),
+		model: modelLabel(model),
+		reasoning: reasoning.disableReasoning ? "off" : (reasoning.reasoning ?? "default"),
+	});
 	// The marker check cancels only this model's request; `signal` still owns the whole line.
 	const attempt = new AbortController();
 	// streamSimple is pi-ai's one entry that maps reasoning/disableReasoning onto each provider's wire field.
 	const events = streamSimple(
 		model,
-		{ messages: [{ role: "user", content: [{ type: "text", text: buildTranslationPrompt(source, targetLanguage) }], timestamp: Date.now() }] },
+		{
+			messages: [
+				{ role: "user", content: [{ type: "text", text: buildTranslationPrompt(source, targetLanguage) }], timestamp: Date.now() },
+			],
+		},
 		{
 			apiKey: auth.apiKey,
 			headers: auth.headers,

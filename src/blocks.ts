@@ -11,8 +11,8 @@
 import { formatThinkingForDisplay } from "@oh-my-pi/pi-tui/chat/thinking-display";
 import { appendLineBound } from "./lines.ts";
 
-/** What the block's renderer last reported: set the first time the host draws the block. */
-export type BlockView = Readonly<{ thinkingIndex: number; requestRender: () => void }>;
+/** What omp's latest renderer call for the block reported; updated in place on every call. */
+export type BlockView = { thinkingIndex: number; requestRender: () => void };
 
 export type TrackedBlock = {
 	/** `<message sequence>:<content index>`, unique within the session. */
@@ -34,7 +34,18 @@ export type TrackedBlock = {
 };
 
 export function trackedBlock(id: string, contentIndex: number, raw: string, ended: boolean): TrackedBlock {
-	return { id, contentIndex, raw, ended, view: undefined, display: "", displayRaw: undefined, displayProse: true, scanFrom: 0, scanHead: "" };
+	return {
+		id,
+		contentIndex,
+		raw,
+		ended,
+		view: undefined,
+		display: "",
+		displayRaw: undefined,
+		displayProse: true,
+		scanFrom: 0,
+		scanHead: "",
+	};
 }
 
 /** The block's display text as the host draws it once fully revealed; recomputed only when its raw text or the mode changed. */
