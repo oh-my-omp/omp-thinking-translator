@@ -8,6 +8,10 @@
 - An earlier box no longer empties when the next thinking block starts with the same words ("The user …"); omp draws a new block before the plugin sees its first text, and that frame used to be taken for the earlier block.
 - The `modelFailed` and `translateError` debug records carry the failure under `error`; before, it overwrote the record's message.
 
+### Changed
+
+- Updated the shared copy of `i18n.ts` to oh-my-omp/shared@e054d56.
+
 ## [1.0.0] - 2026-11-19
 
 ### Breaking Changes
