@@ -25,7 +25,8 @@
 		"test": "bun test"
 	},
 	"files": [
-		"extensions",
+		"index.ts",
+		"src",
 		"omomp-shared",
 		"README.md",
 		"README.zh-CN.md",
@@ -33,8 +34,25 @@
 	],
 	"omp": {
 		"extensions": [
-			"./extensions/thinking-translator.ts"
-		]
+			"./index.ts"
+		],
+		"settings": {
+			"enabled": {
+				"type": "boolean",
+				"default": true,
+				"description": "Translate visible thinking lines; translation also needs the @omp-thinking-translator model role bound in /model"
+			},
+			"targetLanguage": {
+				"type": "string",
+				"default": "Simplified Chinese",
+				"description": "Language the thinking lines are translated into"
+			},
+			"lateNotify": {
+				"type": "boolean",
+				"default": false,
+				"description": "Show translations that finish after their thinking box stopped being redrawn as notification rows"
+			}
+		}
 	},
 	"omomp": {
 		"changelog": "CHANGELOG.md"
