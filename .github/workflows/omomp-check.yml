@@ -1,12 +1,58 @@
 name: omomp-check
+
 on:
   push:
     branches: [main]
   pull_request:
   schedule:
     - cron: "0 18 * * *"
+
 permissions:
   contents: read
+
 jobs:
   check:
-    uses: oh-my-omp/.github/.github/workflows/omomp-check.yml@main
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@main
+        with:
+          path: repository
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/checkout@main
+        with:
+          repository: oh-my-omp/shared
+          ref: main
+          path: omomp-shared
+          persist-credentials: false
+
+      - uses: oven-sh/setup-bun@main
+        with:
+          bun-version: latest
+
+      - name: Dependency convention
+        run: bun omomp-shared/deps.ts check repository
+
+      - name: Install dependencies (frozen bun.lock)
+        working-directory: repository
+        run: bun install --frozen-lockfile
+
+      - name: Upgrade @oh-my-pi packages to their newest release
+        working-directory: repository
+        run: |
+          hosts="$(bun ../omomp-shared/deps.ts host .)"
+          if [ -n "$hosts" ]; then
+            bun update $hosts
+          fi
+
+      - name: Check
+        working-directory: repository
+        run: bun run check
+
+      - name: Test
+        working-directory: repository
+        run: bun run test
+
+      - name: Compare shared copies
+        run: bun omomp-shared/verify.ts repository
