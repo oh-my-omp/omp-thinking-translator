@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-11-22
+
 ### Fixed
 
 - In Tern, a finished translation box that folds (with `expandThinkingBlocks` off, omp's default) now shows its title instead of disappearing.
