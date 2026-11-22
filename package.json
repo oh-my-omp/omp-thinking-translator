@@ -57,6 +57,11 @@
 	"omomp": {
 		"changelog": "CHANGELOG.md"
 	},
+	"peerDependencies": {
+		"@oh-my-pi/pi-ai": "*",
+		"@oh-my-pi/pi-coding-agent": "*",
+		"@oh-my-pi/pi-tui": "*"
+	},
 	"devDependencies": {
 		"@biomejs/biome": "latest",
 		"@oh-my-pi/pi-ai": "latest",
