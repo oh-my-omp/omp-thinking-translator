@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- `@oh-my-pi/pi-ai`, `@oh-my-pi/pi-coding-agent` and `@oh-my-pi/pi-tui` are declared as peer dependencies
+
 ## [1.0.1] - 2026-11-22
 
 ### Fixed
