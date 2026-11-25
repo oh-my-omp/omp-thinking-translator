@@ -2,12 +2,16 @@
  * Nothing lives in module scope: omp evaluates the module once and binds the factory again for every
  * subagent session, so module state would be shared across sessions.
  */
-import type { ExtensionAPI, ExtensionContext, MessageEndEvent, MessageUpdateEvent } from "@oh-my-pi/pi-coding-agent";
+import type {
+	AssistantThinkingRenderContext,
+	ExtensionAPI,
+	ExtensionContext,
+	MessageEndEvent,
+	MessageUpdateEvent,
+} from "@oh-my-pi/pi-coding-agent";
 import { cfgModelRoles } from "@oh-my-pi/pi-coding-agent/config/model-settings";
 import { cfgExpandThinkingBlocks, cfgProseOnlyThinking, cfgRetryFallbackChains } from "@oh-my-pi/pi-coding-agent/session/settings";
-import type { Component } from "@oh-my-pi/pi-tui";
-import type { AssistantThinkingRenderContext } from "@oh-my-pi/pi-tui/chat/extension-types";
-import type { Theme } from "@oh-my-pi/pi-tui/theme/theme";
+import type { JSXNode } from "@oh-my-pi/pi-tui";
 import { tr } from "../omomp-shared/i18n.ts";
 import { resolveBlock, restartScan, type TrackedBlock, takeFinalLines, trackedBlock } from "./blocks.ts";
 import { createLateNotifier } from "./late-notify.ts";
@@ -20,7 +24,7 @@ import { type TranslateDeps, type TranslationCell, translateLine } from "./trans
 const MAX_TRACKED_BLOCKS = 32;
 
 export type TranslatorSession = Readonly<{
-	render(context: AssistantThinkingRenderContext, theme: Theme): Component | undefined;
+	render(context: AssistantThinkingRenderContext): JSXNode | undefined;
 	agentStart(ctx: ExtensionContext): void;
 	messageStart(ctx: ExtensionContext): void;
 	messageUpdate(event: MessageUpdateEvent, ctx: ExtensionContext): void;
@@ -46,7 +50,6 @@ export function createSession(pi: ExtensionAPI, initialContext: ExtensionContext
 	const discoveries = new Map<string, Promise<void>>();
 	const notified = new Set<string>();
 	let messageSeq = 0;
-	let nativeSeen = false;
 
 	const notifyOnce = (key: string, message: string, level: "info" | "warning"): void => {
 		if (notified.has(key)) return;
@@ -135,7 +138,7 @@ export function createSession(pi: ExtensionAPI, initialContext: ExtensionContext
 				view.requestRender();
 				switch (outcome.status) {
 					case "done":
-						if (settings?.lateNotify && !nativeSeen && !cell.painted) late.enqueue(view.thinkingIndex, cell, outcome.translation);
+						if (settings?.lateNotify && !cell.painted) late.enqueue(view.thinkingIndex, cell, outcome.translation);
 						return;
 					case "error":
 						notifyOnce(
@@ -197,9 +200,6 @@ export function createSession(pi: ExtensionAPI, initialContext: ExtensionContext
 			cell.painted = true;
 			log("painted", { thinkingIndex });
 		},
-		nativeSeen() {
-			nativeSeen = true;
-		},
 		expandThinkingBlocks: () => cfgExpandThinkingBlocks.get(host),
 	};
 
@@ -211,12 +211,12 @@ export function createSession(pi: ExtensionAPI, initialContext: ExtensionContext
 	reloadSettings(initialContext.cwd);
 
 	return {
-		render(context, theme) {
+		render(context) {
 			const block = resolveBlock(blocks, context.text, context.contentIndex, proseOnly());
 			if (block === undefined) {
 				const current = prefix;
 				if (current === undefined || !latinLines(context.text).some((line) => cells.has(current + lineKey(line)))) return undefined;
-				return createBlockRenderer(source, context, theme).component;
+				return createBlockRenderer(source).render(context);
 			}
 			const firstDraw = block.view === undefined;
 			if (block.view) {
@@ -224,16 +224,13 @@ export function createSession(pi: ExtensionAPI, initialContext: ExtensionContext
 				block.view.requestRender = context.requestRender;
 				block.view.text = context.text;
 			} else block.view = { thinkingIndex: context.thinkingIndex, requestRender: context.requestRender, text: context.text };
-			// One box per block: omp calls the factory on every display change, and a new component each time
-			// would get a new native id, making the reconciler delete and re-add the whole section per frame.
 			let renderer = renderers.get(block.id);
-			if (renderer) renderer.update(context, theme);
-			else {
-				renderer = createBlockRenderer(source, context, theme);
+			if (!renderer) {
+				renderer = createBlockRenderer(source);
 				renderers.set(block.id, renderer);
 			}
 			if (firstDraw) queueMicrotask(() => dispatch(block));
-			return renderer.component;
+			return renderer.render(context);
 		},
 		agentStart(next) {
 			ctx = next;
