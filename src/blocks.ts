@@ -1,4 +1,4 @@
-import { formatThinkingForDisplay } from "@oh-my-pi/pi-tui/chat/thinking-display";
+import { formatThinkingForDisplay } from "@oh-my-pi/pi-coding-agent/session/transcript/thinking-display";
 import { appendLineBound } from "./lines.ts";
 
 export type BlockView = { thinkingIndex: number; requestRender: () => void; text: string };

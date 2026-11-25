@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- omp 19.2.0 or later is required.
+
+### Fixed
+
+- The plugin loads on omp 19.2.0 again and draws each translation under its thinking block; before, omp 19.2.0 refused to load it (`Cannot find package '@oh-my-pi/pi-agent-core'`).
+
 ## [1.0.2] - 2026-11-24
 
 ### Changed

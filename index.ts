@@ -10,7 +10,7 @@ export default function thinkingTranslator(pi: ExtensionAPI): void {
 		session = ctx.mode === "tui" && ctx.agent.kind === "main" ? createSession(pi, ctx) : undefined;
 	};
 
-	pi.registerAssistantThinkingRenderer((context, theme) => session?.render(context, theme));
+	pi.registerAssistantThinkingRenderer((context) => session?.render(context));
 	pi.registerCommand("thinking-translator", {
 		description: tr("Show thinking-translator settings and translator models", "查看 thinking-translator 设置与翻译模型"),
 		handler: (_args, ctx) => showStatus(pi, ctx),
