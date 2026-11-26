@@ -82,6 +82,6 @@ omp plugin install https://github.com/oh-my-omp/omp-thinking-translator#release
 
 ## Releases
 
-`.github/workflows/omomp-check.yml` runs the shared omomp check (install, `bun run check`, `bun run test`, shared-copy comparison) on every push to `main` and every PR.
+`.github/workflows/omomp-check.yml` runs the shared omomp check on every push to `main`, every PR and daily: dependency convention, install, `@oh-my-pi` upgrade, `bun run check`, `bun run test`, the shared gate (`deps.ts gate`: `@oh-my-pi` exports of production code and its AST rules; `tests/` is reported, not gated) and shared-copy comparison. It checks out `oh-my-omp/shared` at the branch named like the PR's base when shared has one, else `main`. The daily run, and a `workflow_dispatch` with `report_issue`, keeps one tracking issue in this repository open while the check fails and closes it once it passes; pushes and PRs never touch issues. `bun run check` does not run the gate; run it locally from an installed shared checkout with `bun deps.ts gate <this repository>`.
 
 A commit writes its user-visible entries under `## [Unreleased]` in `CHANGELOG.md` and changes no version: after `git add`, run `uvx --from lgit-cli lgit`. The daily release run (`.github/workflows/omomp-release.yml`, 02:00 GMT+9) publishes that section; see `CLAUDE.md`.
