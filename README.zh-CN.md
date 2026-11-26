@@ -17,9 +17,9 @@
   - 重试轮次 — 功能：从模型链第一个模型开始，失败才换下一个；整条链都失败后等待 500/2000/6000 ms 再从头开始，不记忆哪个模型失败过。时机：每行直到成功或等待次数用完。实例：最后一轮之后该行变为错误。
   - 失败与未绑定提示 — 功能：每组失败模型只提示一次警告；角色未绑定时提示一次信息。时机：某行以错误结束时，或在没有绑定时尝试翻译时。实例：`Thinking translation failed: …`、`thinking-translator: bind the @omp-thinking-translator model role in /model to translate thinking`。
 - **显示**
-  - thinking 渲染器 — 功能：在每个 thinking 块下画一个翻译框，只读取已完成的单元，绘制从不发起请求；历史块只有在已有某行译文时才画一次性的框。时机：omp 渲染助手 thinking 块时（`registerAssistantThinkingRenderer`）。实例：ANSI 下是标题为 `done/total`、正文为 Markdown 的框。
-  - Tern surface — 功能：在 Tern 的 surface 协议下返回一个与 omp 自己的 thinking 区块同形的可折叠 `section`，标签和正文原地更新。时机：Tern surface 调用 `describe` 时。实例：该区块跟随 omp 的 `expandThinkingBlocks` 设置。
-  - 迟到通知 — 功能：翻译完成时其翻译框已离开重绘区域（进入 ANSI 回滚区）的行，经 400 ms 防抖后作为通知行发出，连续的行合并；Tern 上不发。时机：`lateNotify` 为 true 且已完成的单元从未被画出时。实例：`Thinking translation · Block 2` 后跟译文行。
+  - thinking 渲染器 — 功能：在每个 thinking 块下画一个翻译框，只读取已完成的单元，绘制从不发起请求；历史块只有在已有某行译文时才画一次性的框。时机：omp 渲染助手 thinking 块时（`registerAssistantThinkingRenderer`）。实例：标题为 `思考翻译 · 块 1 · done/total`、正文为 Markdown 的区块，以 pi-tui 节点由终端和 Tern 绘制。
+  - Tern 折叠 — 功能：在 Tern 中该区块可折叠，折叠方式与 omp 自己的 thinking 区块相同；在普通终端里它始终展开，与 omp 的 thinking 在终端中一致。时机：Tern 以原生方式渲染会话时。实例：`expandThinkingBlocks: false` 下完成的区块折叠，点击后展开。
+  - 迟到通知 — 功能：翻译完成后 400 ms 防抖期内其翻译框没有再次绘制的行，作为通知行发出，连续的行合并。时机：`lateNotify` 为 true 且已完成的单元从未被画出时。实例：`Thinking translation · Block 2` 后跟译文行。
 - **设置与状态**
   - 插件设置 — 功能：`enabled`（默认 `true`）、`targetLanguage`（默认 `Simplified Chinese`）和 `lateNotify`（默认 `false`），经 `getPluginSettings` 读取。时机：会话开始时读取，每次 `agent_start` 再读一次。实例：`omp plugin config set omp-thinking-translator targetLanguage Japanese`。
   - `/thinking-translator` 命令 — 功能：显示设置、角色绑定、回退链、解析出的模型链及其推理档位，以及诊断日志的位置。时机：执行 `/thinking-translator` 时。实例：`role @omp-thinking-translator: …`、`models (tried in order, every request starts at 1):`、`diagnostics: debug records "thinking-translator: …" in ~/.omp/logs/omp.<date>.<pid>.log`。

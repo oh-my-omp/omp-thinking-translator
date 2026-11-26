@@ -3,8 +3,8 @@ import test from "node:test";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { emptyUsage } from "@oh-my-pi/pi-ai/images/shared";
 import { buildDisplayMessage } from "@oh-my-pi/pi-coding-agent/modes/controllers/streaming-reveal";
-import { formatThinkingForDisplay } from "@oh-my-pi/pi-tui/chat/thinking-display";
-import { parseConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
+import { formatThinkingForDisplay } from "@oh-my-pi/pi-coding-agent/session/transcript/thinking-display";
+import { parseConfiguredThinkingLevel } from "@oh-my-pi/pi-coding-agent/thinking/levels";
 import { LANGUAGE_ENV, tr } from "../omomp-shared/i18n.ts";
 import { resolveBlock, takeFinalLines, trackedBlock } from "../src/blocks.ts";
 import { buildLateRows } from "../src/late-notify.ts";
@@ -50,6 +50,7 @@ test("plugin settings fall back to their defaults for unset and invalid values",
 test("a selector's thinking level maps onto streamSimple's reasoning options", () => {
 	assert.deepEqual(reasoningOptions(undefined), {});
 	assert.deepEqual(reasoningOptions(parseConfiguredThinkingLevel("auto")), {});
+	assert.deepEqual(reasoningOptions(parseConfiguredThinkingLevel("inherit")), {});
 	assert.deepEqual(reasoningOptions(parseConfiguredThinkingLevel("off")), { disableReasoning: true });
 	assert.deepEqual(reasoningOptions(parseConfiguredThinkingLevel("low")), { reasoning: "low" });
 	assert.deepEqual(reasoningOptions(parseConfiguredThinkingLevel("max")), { reasoning: "max" });

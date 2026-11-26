@@ -3,7 +3,7 @@ import type { ExtensionContext, Settings } from "@oh-my-pi/pi-coding-agent";
 import { type RoleChainCandidate, resolveRoleChain } from "@oh-my-pi/pi-coding-agent/config/model-resolver";
 import { roleCandidatePool } from "@oh-my-pi/pi-coding-agent/config/model-roles";
 import { cfgRetryFallbackChains } from "@oh-my-pi/pi-coding-agent/session/settings";
-import { type ConfiguredThinkingLevel, concreteThinkingLevel, shouldDisableReasoning, toReasoningEffort } from "@oh-my-pi/pi-tui/thinking";
+import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-coding-agent/utils/render-utils";
 import { PLUGIN } from "./settings.ts";
 
 export const ROLE = PLUGIN;
@@ -26,10 +26,9 @@ export type Candidate = Readonly<{ model: Model<Api>; reasoning: ReasoningOption
  * which an endpoint that requires reasoning rejects; such a model needs an explicit suffix.
  */
 export function reasoningOptions(level: ConfiguredThinkingLevel | undefined): ReasoningOptions {
-	const concrete = concreteThinkingLevel(level);
-	if (shouldDisableReasoning(concrete)) return { disableReasoning: true };
-	const effort = toReasoningEffort(concrete);
-	return effort === undefined ? {} : { reasoning: effort };
+	if (level === undefined || level === "auto" || level === "inherit") return {};
+	if (level === "off") return { disableReasoning: true };
+	return { reasoning: level };
 }
 
 export function modelLabel(model: Model<Api>): string {
