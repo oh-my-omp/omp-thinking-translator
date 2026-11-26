@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-11-26
+
 ### Breaking Changes
 
 - omp 19.2.0 or later is required.
