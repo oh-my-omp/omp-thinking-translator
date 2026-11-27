@@ -6,9 +6,20 @@ on:
   pull_request:
   schedule:
     - cron: "0 18 * * *"
+  workflow_dispatch:
+    inputs:
+      report_issue:
+        description: Maintain this repository's tracking issue as the daily run does.
+        type: boolean
+        default: false
 
 permissions:
   contents: read
+  issues: write
+
+defaults:
+  run:
+    shell: bash
 
 jobs:
   check:
@@ -20,10 +31,22 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Pick the oh-my-omp/shared branch
+        id: shared
+        env:
+          BRANCH: ${{ github.base_ref || github.ref_name }}
+        run: |
+          ref=main
+          if [ -n "$BRANCH" ] && git ls-remote --exit-code --heads https://github.com/oh-my-omp/shared "refs/heads/$BRANCH" >/dev/null; then
+            ref="$BRANCH"
+          fi
+          echo "oh-my-omp/shared@$ref"
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+
       - uses: actions/checkout@main
         with:
           repository: oh-my-omp/shared
-          ref: main
+          ref: ${{ steps.shared.outputs.ref }}
           path: omomp-shared
           persist-credentials: false
 
@@ -31,28 +54,64 @@ jobs:
         with:
           bun-version: latest
 
+      - name: Install the checker (frozen bun.lock)
+        working-directory: omomp-shared
+        run: |
+          mkdir -p "$RUNNER_TEMP/omomp-check"
+          bun install --frozen-lockfile
+
       - name: Dependency convention
-        run: bun omomp-shared/deps.ts check repository
+        id: deps
+        run: bun omomp-shared/deps.ts check repository 2>&1 | tee "$RUNNER_TEMP/omomp-check/deps.log"
 
       - name: Install dependencies (frozen bun.lock)
+        id: install
         working-directory: repository
-        run: bun install --frozen-lockfile
+        run: bun install --frozen-lockfile 2>&1 | tee "$RUNNER_TEMP/omomp-check/install.log"
 
       - name: Upgrade @oh-my-pi packages to their newest release
+        id: update
         working-directory: repository
         run: |
-          hosts="$(bun ../omomp-shared/deps.ts host .)"
-          if [ -n "$hosts" ]; then
-            bun update $hosts
-          fi
+          {
+            hosts="$(bun ../omomp-shared/deps.ts host .)"
+            if [ -n "$hosts" ]; then
+              bun update $hosts
+            fi
+          } 2>&1 | tee "$RUNNER_TEMP/omomp-check/update.log"
 
       - name: Check
+        id: check
         working-directory: repository
-        run: bun run check
+        run: bun run check 2>&1 | tee "$RUNNER_TEMP/omomp-check/check.log"
 
       - name: Test
+        id: test
         working-directory: repository
-        run: bun run test
+        run: bun run test 2>&1 | tee "$RUNNER_TEMP/omomp-check/test.log"
+
+      - name: Gate
+        id: gate
+        run: bun omomp-shared/deps.ts gate repository --summary "$RUNNER_TEMP/omomp-check/gate.json" 2>&1 | tee "$RUNNER_TEMP/omomp-check/gate.log"
 
       - name: Compare shared copies
-        run: bun omomp-shared/verify.ts repository
+        id: verify
+        run: bun omomp-shared/verify.ts repository 2>&1 | tee "$RUNNER_TEMP/omomp-check/verify.log"
+
+      - name: Summarize (no issue writing)
+        if: always() && !cancelled() && !(github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.report_issue == true))
+        env:
+          OMOMP_STEPS: ${{ toJSON(steps) }}
+        run: >-
+          bun omomp-shared/report.ts --root repository --logs "$RUNNER_TEMP/omomp-check"
+          --summary "$RUNNER_TEMP/omomp-check/gate.json" --scope repo --job-status ${{ job.status }}
+
+      - name: Report to this repository's tracking issue
+        if: always() && !cancelled() && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.report_issue == true))
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OMOMP_STEPS: ${{ toJSON(steps) }}
+        run: >-
+          bun omomp-shared/report.ts --root repository --logs "$RUNNER_TEMP/omomp-check"
+          --summary "$RUNNER_TEMP/omomp-check/gate.json" --scope repo --job-status ${{ job.status }}
+          --issue-repo ${{ github.repository }}
